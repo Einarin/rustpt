@@ -38,7 +38,7 @@ impl Sphere {
         let op = self.position - r.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
         let eps = 1e-4f64;
         let b = op.dot(r.direction);
-        let mut det = b*b - op.dot(op) + self.radius * self.radius;
+        let mut det = (b*b) + (self.radius * self.radius) - op.dot(op);
         if det < 0.0 {
             0.0
         } else {
@@ -90,8 +90,9 @@ static PI: f64 = 3.14159265358979323;
 fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
     let (hit, dist) = intersect(spheres,r);
     match hit {
-        None => Vec3::zero(),
+        None => Vec3::zero(), //we didn't intersect anything, return black
         Some(obj) => {
+            //return Vec3::new(dist/(dist+1000.0));
             let x = r.origin+ (r.direction*dist);
             //return x.normalize();
             let un = (x - obj.position);
@@ -122,29 +123,32 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                     return obj.emission;
                 }
             }
-            if f.length() < 1e-6f64 {
+            /*if f.length() < 1e-6f64 {
                 return obj.emission;
-            }
+            }*/
             match obj.refl {
                 ReflType::DIFF => {
                     let r1 = 2.0 * PI * rand::random::<f64>();
-                    let r2 = 0.5 * PI * ( 1.0 - f64::sqrt(rand::random::<f64>()));
-                    let r2s = f64::sin(r2);//f64::sqrt(r2);
-                    let r2c = f64::cos(r2);
-                    let w = nl.abs();
+                    //let r2 = 0.5 * PI * ( 1.0 - f64::sqrt(rand::random::<f64>()));
+                    let r2 = rand::random::<f64>();
+                    let r2s = f64::sqrt(r2);//f64::sin(r2);//f64::sqrt(r2);
+                    //let r2c = f64::cos(r2);
+                    let w = nl;
                     let u = if f64::abs(w.x) > 0.1 {
                         Vec3::set(0.0,1.0,0.0)
                     } else {
                         Vec3::set(1.0,0.0,0.0)
                     }.cross(w).normalize();
                     let v = w.cross(u);
-                    //let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
-                    let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*r2c).normalize();
+                    let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
+                    //let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*r2c).normalize();
                     obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                    //obj.emission + n.abs()
                 },
                 ReflType::SPEC => {
                     let d = r.direction - n*2.0*n.dot(r.direction);
                     obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                    //obj.emission + n.abs()
                 },
                 ReflType::REFR => {
                     let d = r.direction - n*2.0*n.dot(r.direction);
@@ -205,7 +209,7 @@ fn main() {
     let spheres = Arc::new(vec![
         Sphere { //left wall
             radius: 1e5,
-            position: Vec3::set(1e5f64-1.0,40.8,81.6),
+            position: Vec3::set(1e5f64+1.0,40.8,81.6),
             emission: Vec3::zero(),
             color: Vec3::set(0.75,0.25,0.25),
             refl: ReflType::DIFF,
@@ -242,19 +246,19 @@ fn main() {
             radius: 1e5,
             position: Vec3::set(50.0,-1e5f64+81.6,81.6),
             emission: Vec3::zero(),
-            color: Vec3::new(0.1),//Vec3::set(0.75,0.75,0.75),
+            color: Vec3::new(0.75),//Vec3::set(0.75,0.75,0.75),
             refl: ReflType::DIFF,
         },
         Sphere { //mirror ball
-            radius: 13.0,//16.5,
-            position: Vec3::set(27.0,29.5,47.0),
+            radius: 16.5,
+            position: Vec3::set(27.0,16.5,47.0),
             emission: Vec3::zero(),
             color: Vec3::new(0.999),
             refl: ReflType::SPEC,
         },
         Sphere { //glass ball
-            radius: 13.0,//16.5,
-            position: Vec3::set(73.0,24.5,78.0),
+            radius: 16.5,
+            position: Vec3::set(73.0,16.5,78.0),
             emission: Vec3::zero(),
             color: Vec3::new(0.999),
             refl: ReflType::REFR,
@@ -262,7 +266,7 @@ fn main() {
         Sphere { //light
             radius: 600.0,
             position: Vec3::set(50.0,681.6-0.27,81.6),
-            emission: Vec3::new(3.0),
+            emission: Vec3::new(12.0),
             color: Vec3::zero(),
             refl: ReflType::DIFF,
         },
@@ -270,7 +274,7 @@ fn main() {
 
     let w = 1024;
     let h = 768;
-    let samps = 100;
+    let samps = 250;
     println!("generating image {}x{} with {} samples per pixel",w,h,samps*4);//4 subsamples per pixel for AA
     let mut c = vec![Vec3::new(0.0); w*h];
     let progress = Arc::new(AtomicUsize::new(0));
@@ -287,7 +291,7 @@ fn main() {
         println!("will process {} lines per thread with {} threads total",section,num_threads);
         for (thread,mut chunk) in dc.chunks_mut(chunk_length).enumerate() {
             //create our per-thread variables that will be moved
-            let cam = Ray { origin: Vec3::set(50.0,52.0,295.6), direction: Vec3::set(0.0,-0.052612,-1.0).normalize()};
+            let cam = Ray { origin: Vec3::set(50.0,52.0,295.6), direction: Vec3::set(0.0,-0.042612,-1.0).normalize()};
             let cx = Vec3::set((w as f64)*0.5135/(h as f64),0.0,0.0);
             let cy = cx.cross(cam.direction).normalize()*0.5135;
             let my_spheres = spheres.clone();
@@ -300,7 +304,7 @@ fn main() {
                         for x in 0..w {
                             let mut pixel = Vec3::zero();
                             for sy in 0..2 {
-                                let i = (h-y-1)*w+x;
+                                //let i = (h-y-1)*w+x;
                                 for sx in 0..2 {
                                     let mut r = Vec3::zero();
                                     for s in 0..samps {
@@ -318,7 +322,7 @@ fn main() {
                                         };
                                         let d = cx * ( ( ((sx as f64)+0.5 + dx ) / 2.0 + (x as f64)) / (w as f64) - 0.5) +
                                                 cy * ( ( ((sy as f64)+0.5 + dy ) / 2.0 + (y as f64)) / (h as f64) - 0.5) + cam.direction;
-                                        r = r + radiance(&my_spheres, &Ray{origin:cam.origin+(d*140.0),direction:d},&mut 0) * (1.0/(samps as f64));
+                                        r = r + radiance(&my_spheres, &Ray{origin:cam.origin+(d*140.0),direction:d.normalize()},&mut 0) * (1.0/(samps as f64));
                                     }
                                     pixel = pixel + (Vec3::set(clamp(r.x),clamp(r.y),clamp(r.z))*0.25);
                                 }
@@ -330,6 +334,7 @@ fn main() {
                 }));
         }
         let mut p = 0;
+        print!("progress: 0.0%");
         while p < (h-1) {
             let np = progress.load(Ordering::Relaxed);
             if p != np {
