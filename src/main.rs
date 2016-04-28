@@ -34,24 +34,24 @@ struct Sphere {
 }
 
 impl Sphere {
-    pub fn intersect(&self, r: &Ray) -> f64 {
+    pub fn intersect(&self, r: &Ray) -> Option<f64> {
         let op = self.position - r.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
         let eps = 1e-4f64;
         let b = op.dot(r.direction);
         let mut det = (b*b) + (self.radius * self.radius) - op.dot(op);
         if det < 0.0 {
-            0.0
+            Option::None
         } else {
             det = f64::sqrt(det);
             let t = b - det;
             if t > eps {
-                t
+                Option::Some(t)
             } else {
                 let t = b + det;
                 if t > eps {
-                    t
+                    Option::Some(t)
                 } else {
-                    0.0
+                    Option::None
                 }
             }
         }
@@ -75,10 +75,11 @@ fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>,
     let mut t = inf;
     let mut obj = Option::None;
     for s in spheres {
-        let d = s.intersect(r);
-        if d > 0.0 && d < t {
-            t = d;
-            obj = Option::Some(s);
+        if let Some(d) = s.intersect(r) {
+            if d < t {
+                t = d;
+                obj = Option::Some(s);
+            }
         }
     }
     (obj, t)
@@ -181,7 +182,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                         if into {
                             c = 1.0-(-ddn);
                         } else {
-                            c = tdir.dot(n);
+                            c = 1.0 - tdir.dot(n);
                         }
                         let Re = R0+(1.0-R0)*c*c*c*c*c;
                         let Tr = 1.0-Re;
@@ -197,7 +198,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                         } else {
                             radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
                         };
-                        obj.emission + tmp
+                        obj.emission + f * tmp
                     }
                 }
             }
@@ -274,7 +275,7 @@ fn main() {
 
     let w = 1024;
     let h = 768;
-    let samps = 250;
+    let samps = 25000/4;
     println!("generating image {}x{} with {} samples per pixel",w,h,samps*4);//4 subsamples per pixel for AA
     let mut c = vec![Vec3::new(0.0); w*h];
     let progress = Arc::new(AtomicUsize::new(0));

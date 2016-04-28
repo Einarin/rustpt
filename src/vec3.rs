@@ -23,10 +23,11 @@ impl Vec3 {
         let z2 = self.z*self.z;
         f64::sqrt( x2 + y2 + z2)
     }
-    pub fn normalize(self) -> Vec3 {
+    pub fn normalize(mut self) -> Vec3 {
 
         let denom = self.length();
-        self * (1.0/denom)
+        self = self * (1.0/denom);
+        self
     }
 
     pub fn dot(self, rhs: Vec3) -> f64 {
