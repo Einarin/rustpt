@@ -136,4 +136,13 @@ mod test {
         assert_eq!(result.y, 4.0f64);
         assert_eq!(result.z, 4.0f64);
     }
+
+    #[test]
+    fn vec3_abs() {
+        let neg = Vec3::new(-1.0f64);
+        let result = neg.abs();
+        assert_eq!(result.x,1.0f64);
+        assert_eq!(result.y,1.0f64);
+        assert_eq!(result.z,1.0f64);
+    }
 }
