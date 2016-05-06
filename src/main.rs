@@ -6,10 +6,11 @@ use std::io::Write;
 mod vec3; //split into it's own file for readability
 use vec3::*;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
 
+#[derive(Copy, Clone)]
 struct Ray {
     origin: Vec3,
     direction: Vec3,
@@ -18,7 +19,8 @@ struct Ray {
 enum ReflType {
     DIFF,
     SPEC,
-    REFR
+    REFR,
+    LITE
 }
 
 struct Sphere {
@@ -30,6 +32,7 @@ struct Sphere {
 }
 
 impl Sphere {
+    #[inline(always)]
     pub fn intersect(&self, r: &Ray) -> Option<f64> {
         let op = self.position - r.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
         let eps = 1e-4f64;
@@ -65,7 +68,7 @@ fn clamp(x: f64) -> f64 {
 fn to_int(x: f64) -> i32 {
     (f64::powf(clamp(x),1.0/2.2)*255.0 + 0.5) as i32
 }
-
+#[inline(always)]
 fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>, f64) {
     let inf = 1e20f64;
     let mut t = inf;
@@ -80,8 +83,159 @@ fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>,
     }
     (obj, t)
 }
+#[inline(always)]
+fn intersect_val<'a>(spheres: &'a Vec<Sphere>, r: Ray)  -> (Option< &'a Sphere>, f64) {
+    let inf = 1e20f64;
+    let mut t = inf;
+    let mut obj = Option::None;
+    for s in spheres {
+        if let Some(d) = s.intersect(&r) {
+            if d < t {
+                t = d;
+                obj = Option::Some(s);
+            }
+        }
+    }
+    (obj, t)
+}
 
 static PI: f64 = 3.14159265358979323;
+
+#[allow(non_snake_case)] //allow variable naming here to match smallpt
+fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
+    let mut depth: i32 = -1;
+    let mut radiance = Vec3::new(0.0);
+    let mut atten = Vec3::new(1.0);
+    let mut r = ray;
+    loop {
+        depth = depth + 1;
+        let (hit, dist) = intersect_val(spheres,r);
+        match hit {
+            None => break, //we didn't intersect anything, return black
+            Some(obj) => {
+                let x = r.origin+ (r.direction*dist);
+                let un = x - obj.position;
+                let n = un.normalize();
+                //check if we're inside the sphere or not
+                let nl =  if n.dot(r.direction) < 0.0 {
+                    n
+                } else {
+                    n * -1.0
+                };
+                let mut f = obj.color;
+                let p = if f.x>f.y && f.x>f.z {
+                    f.x
+                } else if f.y > f.z {
+                    f.y
+                } else {
+                    f.z
+                };
+                depth +=1;
+                if depth > 5 { //begin russian roulette after 5 bounces
+                                //and terminate at 50 bounces
+                    if depth < 50 && rand::random::<f64>() < p {
+                        f = f * (1.0/p);
+                    } else {
+                        radiance = radiance + atten * obj.emission;
+                        break;
+                    }
+                }
+                match obj.refl {
+                    ReflType::LITE => {
+                        radiance = radiance + (atten * obj.emission);
+                        break;
+                    },
+                    ReflType::DIFF => {
+                        let r1 = 2.0 * PI * rand::random::<f64>();
+                        let r2 = rand::random::<f64>();
+                        let r2s = f64::sqrt(r2);
+                        let w = nl;
+                        let u = if f64::abs(w.x) > 0.1 {
+                            Vec3::set(0.0,1.0,0.0)
+                        } else {
+                            Vec3::set(1.0,0.0,0.0)
+                        }.cross(w).normalize();
+                        let v = w.cross(u);
+                        let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
+                        //obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                        radiance = radiance + (atten * obj.emission);
+                        atten = atten * f;
+                        r = Ray{origin:x,direction:d};
+                    },
+                    ReflType::SPEC => {
+                        let d = r.direction - n*2.0*n.dot(r.direction);
+                        //obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                        radiance = radiance + (atten * obj.emission);
+                        atten = atten * f;
+                        r = Ray{origin:x,direction:d};
+                    },
+                    ReflType::REFR => {
+                        let d = r.direction - n*2.0*n.dot(r.direction);
+                        let reflRay = Ray { origin: x, direction: d };
+                        let into = n.dot(nl) > 0.0;
+                        let nc = 1f64;
+                        let nt = 1.5;
+                        let nnt;
+                        if into {
+                            nnt = nc/nt;
+                        } else {
+                            nnt = nt/nc;
+                        }
+                        let ddn = r.direction.dot(nl);
+                        let cos2t = 1.0 - nnt*nnt*(1.0-ddn*ddn);
+                        if cos2t < 0.0 { //total internal reflection
+                            //obj.emission + f * radiance(spheres,&reflRay,depth)
+                            radiance = radiance + (atten * obj.emission);
+                            atten = atten * f;
+                            r = reflRay;
+                        } else {
+                            let sign;
+                            if into {
+                                sign = 1.0;
+                            } else {
+                                sign = -1.0;
+                            }
+                            let tdir = (r.direction*nnt - n*(sign*(ddn*nnt+f64::sqrt(cos2t)))).normalize();
+                            let a = nt-nc;
+                            let b = nt+nc;
+                            let R0 = a*a/(b*b);
+                            let c;
+                            if into {
+                                c = 1.0-(-ddn);
+                            } else {
+                                c = 1.0 - tdir.dot(n);
+                            }
+                            let Re = R0+(1.0-R0)*c*c*c*c*c;
+                            let Tr = 1.0-Re;
+                            let P = 0.25+0.5*Re;
+                            let RP = Re/P;
+                            let TP = Tr/(1.0-P);
+                            /*let tmp = //if *depth > 2 {
+                                if rand::random::<f64>() < P { //Russian roulette
+                                    radiance(spheres,&reflRay,depth)*RP
+                                } else {
+                                    radiance(spheres,&Ray { origin: x, direction: tdir },depth)*TP
+                                }
+                            } else {
+                                radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
+                            };
+                            obj.emission + f * tmp*/
+                            radiance = radiance + (atten * obj.emission);
+                            if rand::random::<f64>() < P {
+                                atten = atten * RP;
+                                r = reflRay;
+                            } else {
+                                atten = atten * TP;
+                                r = Ray { origin: x, direction: tdir };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    radiance
+}
 
 #[allow(non_snake_case)] //allow variable naming here to match smallpt
 fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
@@ -116,6 +270,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                 }
             }
             match obj.refl {
+                ReflType::LITE => obj.emission,
                 ReflType::DIFF => {
                     let r1 = 2.0 * PI * rand::random::<f64>();
                     let r2 = rand::random::<f64>();
@@ -172,15 +327,15 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                         let P = 0.25+0.5*Re;
                         let RP = Re/P;
                         let TP = Tr/(1.0-P);
-                        let tmp = if *depth > 2 {
+                        let tmp = //if *depth > 2 {
                             if rand::random::<f64>() < P { //Russian roulette
                                 radiance(spheres,&reflRay,depth)*RP
                             } else {
                                 radiance(spheres,&Ray { origin: x, direction: tdir },depth)*TP
                             }
-                        } else {
+                        /*} else {
                             radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
-                        };
+                        };*/;
                         obj.emission + f * tmp
                     }
                 }
@@ -247,21 +402,29 @@ fn main() {
             color: Vec3::new(0.999),
             refl: ReflType::REFR,
         },
+        Sphere {
+            radius: 16.5,
+            position: Vec3::set(27.0,0.0,96.0),
+            emission: Vec3::zero(),
+            color: Vec3::new(0.99),
+            refl: ReflType::DIFF,
+        },
         Sphere { //light
             radius: 600.0,
             position: Vec3::set(50.0,681.6-0.27,81.6),
             emission: Vec3::new(12.0),
             color: Vec3::zero(),
-            refl: ReflType::DIFF,
+            refl: ReflType::LITE,
         },
     ]);
 
-    let w = 1024;
-    let h = 768;
+    let w = 1024*2;
+    let h = 768*2;
     let samps = 25000/4; //divide by 4 because we do 2x2 MSAA
     println!("generating image {}x{} with {} samples per pixel",w,h,samps*4);//4 subsamples per pixel for AA
     let mut c = vec![Vec3::new(0.0); w*h];
     let progress = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
     crossbeam::scope(|scope| {
         let num_threads = 8;
         let section = h/num_threads;
@@ -299,7 +462,8 @@ fn main() {
                                         };
                                         let d = cx * ( ( ((sx as f64)+0.5 + dx ) / 2.0 + (x as f64)) / (w as f64) - 0.5) +
                                                 cy * ( ( ((sy as f64)+0.5 + dy ) / 2.0 + (y as f64)) / (h as f64) - 0.5) + cam.direction;
-                                        r = r + radiance(&my_spheres, &Ray{origin:cam.origin+(d*140.0),direction:d.normalize()},&mut 0) * (1.0/(samps as f64));
+                                        //r = r + radiance(&my_spheres, &Ray{origin:cam.origin+(d*140.0),direction:d.normalize()},&mut 0) * (1.0/(samps as f64));
+                                        r = r + radiance_iter(&my_spheres, Ray{origin:cam.origin+(d*140.0),direction:d.normalize()}) * (1.0/(samps as f64));
                                     }
                                     pixel = pixel + (Vec3::set(clamp(r.x),clamp(r.y),clamp(r.z))*0.25);
                                 }
@@ -327,6 +491,10 @@ fn main() {
         }
         println!("\ndone!");
     });
+    let end = Instant::now();
+    let duration = end.duration_since(start);
+    let seconds = duration.as_secs() as f64 + (duration.subsec_nanos() as f64)/1e9f64;
+    println!("Time: {} seconds",seconds);
     print!("\rSaving...");
     let f = File::create("image.ppm").unwrap();
     let mut writer = BufWriter::new(f);
