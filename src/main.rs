@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
 use std::path::Path;
 
+extern crate tobj;
+
 extern crate piston_window;
 extern crate image;
 use piston_window::{PistonWindow, WindowSettings, Texture, OpenGL, Transformed, clear, image as draw_image};
@@ -23,6 +25,7 @@ struct Ray {
     direction: Vec3,
 }
 
+#[derive(Copy, Clone)]
 enum ReflType {
     DIFF,
     SPEC,
@@ -30,12 +33,17 @@ enum ReflType {
     LITE
 }
 
-struct Sphere {
-    radius: f64,
-    position: Vec3,
+#[derive(Copy, Clone)]
+struct Material {
     emission: Vec3,
     color: Vec3,
     refl: ReflType,
+}
+
+struct Sphere {
+    radius: f64,
+    position: Vec3,
+    material: Material,
 }
 
 impl Sphere {
@@ -80,6 +88,332 @@ fn to_u8(x: f64) -> u8 {
     (f64::powf(clamp(x),1.0/2.2)*255.0 + 0.5) as u8
 }
 
+struct Triangle {
+    points: [Vec3; 3],
+}
+
+impl Triangle {
+    fn iter(&self) -> std::slice::Iter<Vec3> {
+        self.points.iter()
+    }
+}
+
+fn make_cube() -> Vec<Triangle> {
+    vec![
+        //front
+        Triangle { points:[ 
+            Vec3::set(-0.5, -0.5, -0.5),  
+            Vec3::set( -0.5,  0.5, -0.5),  
+            Vec3::set(  0.5,  0.5, -0.5),
+        ]},
+        Triangle { points:[ 
+            Vec3::set( -0.5,  0.5, -0.5),  
+            Vec3::set(  0.5,  0.5, -0.5),
+            Vec3::set(  0.5, -0.5, -0.5),
+        ]},  
+        //back
+        Triangle { points:[
+            Vec3::set( 0.5, -0.5, 0.5 ),
+            Vec3::set( 0.5,  0.5, 0.5 ),
+            Vec3::set( -0.5,  0.5, 0.5 ),
+        ]},
+        Triangle { points:[
+            Vec3::set( 0.5,  0.5, 0.5 ),
+            Vec3::set( -0.5,  0.5, 0.5 ),
+            Vec3::set( -0.5, -0.5, 0.5 ),
+        ]},
+        //RIGHT
+        Triangle { points:[								
+            Vec3::set( 0.5, -0.5, -0.5 ),
+            Vec3::set( 0.5,  0.5, -0.5 ),
+            Vec3::set( 0.5,  0.5,  0.5 ),
+        ]},
+        Triangle { points:[	
+            Vec3::set( 0.5,  0.5, -0.5 ),
+            Vec3::set( 0.5,  0.5,  0.5 ),
+            Vec3::set( 0.5, -0.5,  0.5 ),
+        ]},
+        //LEFT
+        Triangle { points:[	
+            Vec3::set( -0.5, -0.5,  0.5 ),
+            Vec3::set( -0.5,  0.5,  0.5 ),
+            Vec3::set( -0.5,  0.5, -0.5 ),
+        ]},
+        Triangle { points:[	
+            Vec3::set( -0.5,  0.5,  0.5 ),
+            Vec3::set( -0.5,  0.5, -0.5 ),
+            Vec3::set( -0.5, -0.5, -0.5 ),
+        ]},
+        //TOP				
+        Triangle { points:[							 
+            Vec3::set(  0.5,  0.5,  0.5 ),
+            Vec3::set(  0.5,  0.5, -0.5 ),
+            Vec3::set( -0.5,  0.5, -0.5 ),
+        ]},
+        Triangle { points:[	
+            Vec3::set(  0.5,  0.5, -0.5 ),
+            Vec3::set( -0.5,  0.5, -0.5 ),
+            Vec3::set( -0.5,  0.5,  0.5 ),
+        ]},
+        //BOTTOM
+        Triangle { points:[	
+            Vec3::set(  0.5, -0.5, -0.5 ),
+            Vec3::set(  0.5, -0.5,  0.5 ),
+            Vec3::set( -0.5, -0.5,  0.5 ),
+        ]},
+        Triangle { points:[	
+            Vec3::set(  0.5, -0.5,  0.5 ),
+            Vec3::set( -0.5, -0.5,  0.5 ),
+            Vec3::set( -0.5, -0.5, -0.5 ),
+        ]},
+    ]
+}
+#[derive(Debug)]
+struct AABB {
+    x: (f64,f64),
+    y: (f64, f64),
+    z: (f64,f64),
+}
+
+impl AABB {
+    fn split(&self, split_axis:Axis, split_val: f64) -> (AABB,AABB) {
+        let mut lt = AABB {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+        };
+        let mut gt = AABB {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+        };
+        match split_axis {
+            Axis::X => { lt.x.1 = split_val; gt.x.0 = split_val; },
+            Axis::Y => { lt.y.1 = split_val; gt.y.0 = split_val; },
+            Axis::Z => { lt.z.1 = split_val; gt.z.0 = split_val; },
+        }
+        (lt,gt)
+    }
+    fn contains_point(&self, point: &Vec3) -> bool {
+        point.x > self.x.0 && point.x < self.x.1
+            && point.y > self.y.0 && point.y < self.y.1
+            && point.z > self.z.0 && point.z < self.z.1
+    }
+    fn contains_ray(&self, ray: Ray) -> bool {
+        let mut tmin = -std::f64::INFINITY;
+        let mut tmax = std::f64::INFINITY;
+        let tx1 = (self.x.0 - ray.origin.x)/ray.direction.x;
+        let tx2 = (self.x.1 - ray.origin.x)/ray.direction.x;
+        tmin = f64::max(tmin, f64::min(tx1,tx2));
+        tmax = f64::min(tmax, f64::max(tx1,tx2));
+        let ty1 = (self.y.0 - ray.origin.y)/ray.direction.y;
+        let ty2 = (self.y.1 - ray.origin.y)/ray.direction.y;
+        tmin = f64::max(tmin, f64::min(ty1,ty2));
+        tmax = f64::min(tmax, f64::max(ty1,ty2));
+        let tz1 = (self.z.0 - ray.origin.z)/ray.direction.z;
+        let tz2 = (self.z.1 - ray.origin.z)/ray.direction.z;
+        tmin = f64::max(tmin, f64::min(tz1,tz2));
+        tmax = f64::min(tmax, f64::max(tz1,tz2));
+        tmax >= tmin
+
+    }
+    fn contains_tri(&self, tri: &Triangle) -> bool {
+        self.contains_point(&tri.points[0]) || self.contains_point(&tri.points[1]) || self.contains_point(&tri.points[2])
+    }
+    fn biggest_dim(&self, avg: Vec3) -> (Axis,f64) {
+        let diff = Vec3::set(self.x.1,self.y.1,self.z.1) - Vec3::set(self.x.0,self.y.0,self.z.0);
+        if diff.x > diff.y {
+            if diff.x > diff.z {
+                (Axis::X,avg.x)
+            } else {
+                (Axis::Z,avg.z)
+            }
+        } else {
+            if diff.y > diff.z {
+                (Axis::Y,avg.y)
+            } else {
+                (Axis::Z,avg.z)
+            }
+        }
+    }
+    fn split_biggest(&self, avg: Vec3) -> (AABB,AABB){
+        let (biggest_axis, sval) = self.biggest_dim(avg);
+        self.split(biggest_axis,sval)
+    }
+
+    pub fn valid(&self) -> bool {
+        self.x.0 < self.x.1 && self.y.0 < self.y.1 && self.z.0 < self.z.1
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+struct KDBranch {
+    aabb: AABB,
+    split_axis: Axis,
+    split_val: f64,
+    child_lt: Box<KDNode>,
+    child_gt: Box<KDNode>,
+}
+
+struct KDLeaf {
+    tri_inds: Vec<usize>,
+}
+
+enum KDNode {
+    Branch(KDBranch),
+    Leaf(KDLeaf),
+}
+
+struct KDTree {
+    root: KDNode,
+}
+
+impl KDTree {
+    fn biggest_dim(diff: Vec3, avg: Vec3) -> (Axis,f64) {
+        if diff.x > diff.y {
+            if diff.x > diff.z {
+                (Axis::X,avg.x)
+            } else {
+                (Axis::Z,avg.z)
+            }
+        } else {
+            if diff.y > diff.z {
+                (Axis::Y,avg.y)
+            } else {
+                (Axis::Z,avg.z)
+            }
+        }
+    }
+    fn build_helper(triangles: &Vec<Triangle>, aabb:AABB, depth: usize) -> Box<KDNode> {
+        let mut sum = Vec3::zero();
+        let mut count:f64 = 0.0;
+        let mut indices = Vec::new();
+        for i in 0..triangles.len() {
+            let ref tri = triangles[i];
+            if aabb.contains_tri(tri) {
+                indices.push(i);
+                for pt in tri.iter() {
+                    sum = sum + *pt;
+                    count += 1.0;
+                }
+            }
+        }
+        let (biggest_axis, sval) = aabb.biggest_dim(sum * (1.0/count));
+        let (la, ga) = aabb.split_biggest(sum * (1.0/count));
+        println!("count:{} sval:{} axis:{:?} la:{:?} ga:{:?}",count,sval,biggest_axis,la,ga);
+        if depth < 3 && count > 18.0 && la.valid() && ga.valid() { //arbitrarily picked 3 triangles as leaf size
+            Box::new(KDNode::Branch(KDBranch{
+                aabb: aabb,
+                split_axis: biggest_axis,
+                split_val: sval,
+                child_lt: KDTree::build_helper(triangles,la,depth+1),
+                child_gt: KDTree::build_helper(triangles,ga,depth+1),
+                }))
+        } else {
+            Box::new(KDNode::Leaf(KDLeaf {
+                tri_inds: indices,
+            }))
+        }
+    }
+
+    pub fn build(triangles: &Vec<Triangle>) -> KDTree {
+        let mut mins = Vec3::zero();
+        let mut maxs = Vec3::zero();
+        let mut sum = Vec3::zero();
+        for tri in triangles {
+            for pt in tri.iter() {
+                mins.x = f64::min(mins.x,pt.x);
+                mins.y = f64::min(mins.y,pt.y);
+                mins.z = f64::min(mins.z,pt.z);
+                maxs.x = f64::max(maxs.x,pt.x);
+                maxs.y = f64::max(maxs.y,pt.y);
+                maxs.z = f64::max(maxs.z,pt.z);
+                sum = sum + *pt;
+            }
+        }
+        let avg = sum * (1.0 / (triangles.len() * 3) as f64);
+        let diff = maxs - mins;
+        let (biggest_axis, sval) = KDTree::biggest_dim(diff, avg);
+        let aabb = AABB {
+            x:(mins.x,maxs.x),
+            y:(mins.y,maxs.y),
+            z:(mins.z,maxs.z),
+        };
+        let (la,ga) = aabb.split(biggest_axis,sval);
+        KDTree {
+            root: KDNode::Branch(KDBranch{
+                aabb: aabb,
+                split_axis: biggest_axis,
+                split_val: sval,
+            child_lt: KDTree::build_helper(triangles,la,0),
+            child_gt: KDTree::build_helper(triangles,ga,0),
+            }),
+        }
+    }
+
+    fn intersect_helper<'a>(triangles: &'a Vec<Triangle>, ray: Ray, node: &KDNode,depth: usize) -> (Option<&'a Triangle>, f64){
+        match *node {
+            KDNode::Branch(ref branch) => {
+                if !branch.aabb.contains_ray(ray) || depth > 10 {
+                    return (None,std::f64::INFINITY);
+                }
+                if let (Some(x),y) = KDTree::intersect_helper(triangles, ray, &*branch.child_lt,depth+1) {
+                    (Some(x),y)
+                } else {
+                    KDTree::intersect_helper(triangles, ray, &*branch.child_gt,depth+1)
+                }
+            },
+            KDNode::Leaf(ref leaf) => {
+                intersect_triangle(triangles,ray)
+            },
+        }
+    }
+
+    pub fn intersect<'a>(&self, triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64){
+        KDTree::intersect_helper(triangles,ray,&self.root,0)
+    }
+}
+
+#[inline(always)]
+fn intersect_triangle<'a>(triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64) {
+    let inf = 1e20f64;
+    let EPSILON = 0.000001f64;
+    let mut depth = inf;
+    let mut obj = Option::None;
+    for triangle in triangles {
+        let e1 = triangle.points[1] - triangle.points[0];
+        let e2 = triangle.points[2] - triangle.points[0];
+        let p = ray.direction.cross(e2);
+        let det = e1.dot(p);
+        if det > -EPSILON && det < EPSILON {
+            continue;
+        }
+        let inv_det = 1.0 / det;
+        let t = ray.origin - triangle.points[0];
+        let u = t.dot(p) * inv_det;
+        if u < 0.0 || u > 1.0 {
+            continue;
+        }
+        let q = t.cross(e1);
+        let v = ray.direction.dot(q) * inv_det;
+        if v < 0.0 || (u + v) > 1.0 {
+            continue;
+        }
+        let potential_depth = e2.dot(q) * inv_det;
+        if potential_depth > EPSILON && potential_depth < depth {
+            obj = Option::Some(triangle);
+            depth = potential_depth;
+        }
+    }
+    (obj, depth)
+}
+
 #[inline(always)]
 fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>, f64) {
     let inf = 1e20f64;
@@ -119,128 +453,175 @@ fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
     let mut radiance = Vec3::new(0.0);
     let mut atten = Vec3::new(1.0);
     let mut r = ray;
+    let (obj, mat) = tobj::load_obj(&Path::new("teapot.obj")).unwrap();
+    let obj_tris = obj.into_iter().flat_map(|x| {
+        let mut tris = Vec::new();
+        for f in 0..x.mesh.indices.len() / 3 {
+            let mut tri = Vec::new();
+            for ind in &x.mesh.indices[3*f..3*f+3] {
+                let v = Vec3::set(x.mesh.positions[(3* *ind) as usize]as f64,
+                    x.mesh.positions[(3* *ind) as usize +1]as f64,
+                    x.mesh.positions[(3* *ind) as usize +2]as f64,
+                );
+                tri.push(v * 20.0 + Vec3::set(50.0,20.0,50.0));
+            }
+            tris.push(Triangle { points: [tri[0],tri[1],tri[2]]});
+        }
+        tris
+    }).collect();
+    let kdtree = KDTree::build(&obj_tris);
+    /*let cube:Vec<Triangle> = make_cube().into_iter().map(|x|Triangle { points:[
+            x.points[0] * 20.0 + Vec3::set(50.0,20.0,50.0),
+            x.points[1] * 20.0 + Vec3::set(50.0,20.0,50.0),
+            x.points[2] * 20.0 + Vec3::set(50.0,20.0,50.0),
+    ]}).collect();*/
     loop {
         depth = depth + 1;
         let (hit, dist) = intersect_val(spheres,r);
-        match hit {
-            None => break, //we didn't intersect anything, return black
-            Some(obj) => {
-                let x = r.origin+ (r.direction*dist);
-                let un = x - obj.position;
-                let n = un.normalize();
-                //check if we're inside the sphere or not
-                let nl =  if n.dot(r.direction) < 0.0 {
-                    n
-                } else {
-                    n * -1.0
-                };
-                let mut f = obj.color;
-                let p = if f.x>f.y && f.x>f.z {
-                    f.x
-                } else if f.y > f.z {
-                    f.y
-                } else {
-                    f.z
-                };
-                depth +=1;
-                if depth > 5 { //begin russian roulette after 5 bounces
-                                //and terminate at 50 bounces
-                    if depth < 50 && rand::random::<f64>() < p {
-                        f = f * (1.0/p);
-                    } else {
-                        radiance = radiance + atten * obj.emission;
-                        break;
-                    }
+        //let (hit2, dist2) = intersect_triangle(&obj_tris, r);
+        let (hit2, dist2) = kdtree.intersect(&obj_tris, r);
+        //let hit2: Option<Triangle> = None; let dist2 = std::f64::INFINITY;
+
+        let x = r.origin+ (r.direction*dist);
+        let n;
+        let mtl;
+        if dist2 < dist {
+            if let Some(triangle) = hit2 {
+                //ReflType::DIFF
+                let e1 = triangle.points[1] - triangle.points[0];
+                let e2 = triangle.points[2] - triangle.points[0];
+                let norm = e1.cross(e2);
+                let r1 = 2.0 * PI * rand::random::<f64>();
+                let r2 = rand::random::<f64>();
+                let r2s = f64::sqrt(r2);
+                n = norm.normalize().abs();
+                mtl = Material {
+                    emission: Vec3::zero(),
+                    color: Vec3::set(0.25,0.75,0.25),
+                    refl: ReflType::DIFF,
                 }
-                match obj.refl {
-                    ReflType::LITE => {
-                        radiance = radiance + (atten * obj.emission);
-                        break;
-                    },
-                    ReflType::DIFF => {
-                        let r1 = 2.0 * PI * rand::random::<f64>();
-                        let r2 = rand::random::<f64>();
-                        let r2s = f64::sqrt(r2);
-                        let w = nl;
-                        let u = if f64::abs(w.x) > 0.1 {
-                            Vec3::set(0.0,1.0,0.0)
+            } else {
+                break;
+            }
+        } else {
+            if let Some(circle) = hit {
+                let un = x - circle.position;
+                n = un.normalize();
+                mtl = circle.material;
+            } else {
+                break;
+            }
+        }
+        let nl = if n.dot(r.direction) < 0.0 {
+            n
+        } else {
+            n * -1.0
+        };
+        let mut f = mtl.color;
+        let p = if f.x>f.y && f.x>f.z {
+            f.x
+        } else if f.y > f.z {
+            f.y
+        } else {
+            f.z
+        };
+        depth +=1;
+        if depth > 5 { //begin russian roulette after 5 bounces
+                        //and terminate at 10 bounces
+            if depth < 10 && rand::random::<f64>() < p {
+                f = f * (1.0/p);
+            } else {
+                radiance = radiance + atten * mtl.emission;
+                break;
+            }
+        }
+        match mtl.refl {
+            ReflType::LITE => {
+                radiance = radiance + (atten * mtl.emission);
+                break;
+            },
+            ReflType::DIFF => {
+                let r1 = 2.0 * PI * rand::random::<f64>();
+                let r2 = rand::random::<f64>();
+                let r2s = f64::sqrt(r2);
+                let w = nl;
+                let u = if f64::abs(w.x) > 0.1 {
+                    Vec3::set(0.0,1.0,0.0)
+                } else {
+                    Vec3::set(1.0,0.0,0.0)
+                }.cross(w).normalize();
+                let v = w.cross(u);
+                let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
+                //mtl.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                radiance = radiance + (atten * mtl.emission);
+                atten = atten * f;
+                r = Ray{origin:x,direction:d};
+            },
+            ReflType::SPEC => {
+                let d = r.direction - n*2.0*n.dot(r.direction);
+                //mtl.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                radiance = radiance + (atten * mtl.emission);
+                atten = atten * f;
+                r = Ray{origin:x,direction:d};
+            },
+            ReflType::REFR => {
+                let d = r.direction - n*2.0*n.dot(r.direction);
+                let reflRay = Ray { origin: x, direction: d };
+                let into = n.dot(nl) > 0.0;
+                let nc = 1f64;
+                let nt = 1.5;
+                let nnt;
+                if into {
+                    nnt = nc/nt;
+                } else {
+                    nnt = nt/nc;
+                }
+                let ddn = r.direction.dot(nl);
+                let cos2t = 1.0 - nnt*nnt*(1.0-ddn*ddn);
+                if cos2t < 0.0 { //total internal reflection
+                    //mtl.emission + f * radiance(spheres,&reflRay,depth)
+                    radiance = radiance + (atten * mtl.emission);
+                    atten = atten * f;
+                    r = reflRay;
+                } else {
+                    let sign;
+                    if into {
+                        sign = 1.0;
+                    } else {
+                        sign = -1.0;
+                    }
+                    let tdir = (r.direction*nnt - n*(sign*(ddn*nnt+f64::sqrt(cos2t)))).normalize();
+                    let a = nt-nc;
+                    let b = nt+nc;
+                    let R0 = a*a/(b*b);
+                    let c;
+                    if into {
+                        c = 1.0-(-ddn);
+                    } else {
+                        c = 1.0 - tdir.dot(n);
+                    }
+                    let Re = R0+(1.0-R0)*c*c*c*c*c;
+                    let Tr = 1.0-Re;
+                    let P = 0.25+0.5*Re;
+                    let RP = Re/P;
+                    let TP = Tr/(1.0-P);
+                    /*let tmp = //if *depth > 2 {
+                        if rand::random::<f64>() < P { //Russian roulette
+                            radiance(spheres,&reflRay,depth)*RP
                         } else {
-                            Vec3::set(1.0,0.0,0.0)
-                        }.cross(w).normalize();
-                        let v = w.cross(u);
-                        let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
-                        //obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
-                        radiance = radiance + (atten * obj.emission);
-                        atten = atten * f;
-                        r = Ray{origin:x,direction:d};
-                    },
-                    ReflType::SPEC => {
-                        let d = r.direction - n*2.0*n.dot(r.direction);
-                        //obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
-                        radiance = radiance + (atten * obj.emission);
-                        atten = atten * f;
-                        r = Ray{origin:x,direction:d};
-                    },
-                    ReflType::REFR => {
-                        let d = r.direction - n*2.0*n.dot(r.direction);
-                        let reflRay = Ray { origin: x, direction: d };
-                        let into = n.dot(nl) > 0.0;
-                        let nc = 1f64;
-                        let nt = 1.5;
-                        let nnt;
-                        if into {
-                            nnt = nc/nt;
-                        } else {
-                            nnt = nt/nc;
+                            radiance(spheres,&Ray { origin: x, direction: tdir },depth)*TP
                         }
-                        let ddn = r.direction.dot(nl);
-                        let cos2t = 1.0 - nnt*nnt*(1.0-ddn*ddn);
-                        if cos2t < 0.0 { //total internal reflection
-                            //obj.emission + f * radiance(spheres,&reflRay,depth)
-                            radiance = radiance + (atten * obj.emission);
-                            atten = atten * f;
-                            r = reflRay;
-                        } else {
-                            let sign;
-                            if into {
-                                sign = 1.0;
-                            } else {
-                                sign = -1.0;
-                            }
-                            let tdir = (r.direction*nnt - n*(sign*(ddn*nnt+f64::sqrt(cos2t)))).normalize();
-                            let a = nt-nc;
-                            let b = nt+nc;
-                            let R0 = a*a/(b*b);
-                            let c;
-                            if into {
-                                c = 1.0-(-ddn);
-                            } else {
-                                c = 1.0 - tdir.dot(n);
-                            }
-                            let Re = R0+(1.0-R0)*c*c*c*c*c;
-                            let Tr = 1.0-Re;
-                            let P = 0.25+0.5*Re;
-                            let RP = Re/P;
-                            let TP = Tr/(1.0-P);
-                            /*let tmp = //if *depth > 2 {
-                                if rand::random::<f64>() < P { //Russian roulette
-                                    radiance(spheres,&reflRay,depth)*RP
-                                } else {
-                                    radiance(spheres,&Ray { origin: x, direction: tdir },depth)*TP
-                                }
-                            } else {
-                                radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
-                            };
-                            obj.emission + f * tmp*/
-                            radiance = radiance + (atten * obj.emission);
-                            if rand::random::<f64>() < P {
-                                atten = atten * RP;
-                                r = reflRay;
-                            } else {
-                                atten = atten * TP;
-                                r = Ray { origin: x, direction: tdir };
-                            }
-                        }
+                    } else {
+                        radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
+                    };
+                    mtl.emission + f * tmp*/
+                    radiance = radiance + (atten * mtl.emission);
+                    if rand::random::<f64>() < P {
+                        atten = atten * RP;
+                        r = reflRay;
+                    } else {
+                        atten = atten * TP;
+                        r = Ray { origin: x, direction: tdir };
                     }
                 }
             }
@@ -264,7 +645,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
             } else {
                 n * -1.0
             };
-            let mut f = obj.color;
+            let mut f = obj.material.color;
             let p = if f.x>f.y && f.x>f.z {
                 f.x
             } else if f.y > f.z {
@@ -278,11 +659,11 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                 if *depth < 50 && rand::random::<f64>() < p {
                     f = f * (1.0/p);
                 } else {
-                    return obj.emission;
+                    return obj.material.emission;
                 }
             }
-            match obj.refl {
-                ReflType::LITE => obj.emission,
+            match obj.material.refl {
+                ReflType::LITE => obj.material.emission,
                 ReflType::DIFF => {
                     let r1 = 2.0 * PI * rand::random::<f64>();
                     let r2 = rand::random::<f64>();
@@ -295,11 +676,11 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                     }.cross(w).normalize();
                     let v = w.cross(u);
                     let d = (u*f64::cos(r1)*r2s + v*f64::sin(r1)*r2s + w*f64::sqrt(1.0-r2)).normalize();
-                    obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                    obj.material.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
                 },
                 ReflType::SPEC => {
                     let d = r.direction - n*2.0*n.dot(r.direction);
-                    obj.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
+                    obj.material.emission + f * radiance(spheres,&Ray{origin:x,direction:d},depth)
                 },
                 ReflType::REFR => {
                     let d = r.direction - n*2.0*n.dot(r.direction);
@@ -316,7 +697,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                     let ddn = r.direction.dot(nl);
                     let cos2t = 1.0 - nnt*nnt*(1.0-ddn*ddn);
                     if cos2t < 0.0 { //total internal reflection
-                        obj.emission + f * radiance(spheres,&reflRay,depth)
+                        obj.material.emission + f * radiance(spheres,&reflRay,depth)
                     } else {
                         let sign;
                         if into {
@@ -348,7 +729,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
                         /*} else {
                             radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
                         };*/;
-                        obj.emission + f * tmp
+                        obj.material.emission + f * tmp
                     }
                 }
             }
@@ -375,72 +756,92 @@ impl PathTracer {
                 Sphere { //left wall
                     radius: 1e5,
                     position: Vec3::set(1e5f64+1.0,40.8,81.6),
-                    emission: Vec3::zero(),
-                    color: Vec3::set(0.75,0.25,0.25),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.75,0.25,0.25),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //right wall
                     radius: 1e5,
                     position: Vec3::set(-1e5f64+99f64,40.8,81.6),
-                    emission: Vec3::zero(),
-                    color: Vec3::set(0.25,0.25,0.75),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.25,0.25,0.75),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //back wall
                     radius: 1e5,
                     position: Vec3::set(50.0,40.8,1e5f64),
-                    emission: Vec3::zero(),
-                    color: Vec3::set(0.75,0.75,0.75),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.75,0.75,0.75),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //front wall
                     radius: 1e5,
                     position: Vec3::set(50.0,40.8,-1e5f64+170f64),
-                    emission: Vec3::zero(),
-                    color: Vec3::zero(),//Vec3::set(0.5,0.5,0.5),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::zero(),//Vec3::set(0.5,0.5,0.5),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //floor
                     radius: 1e5,
                     position: Vec3::set(50.0,1e5f64,81.6),
-                    emission: Vec3::zero(),
-                    color: Vec3::set(0.75,0.75,0.75),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.75,0.75,0.75),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //ceiling
                     radius: 1e5,
                     position: Vec3::set(50.0,-1e5f64+81.6,81.6),
-                    emission: Vec3::zero(),
-                    color: Vec3::new(0.75),//Vec3::set(0.75,0.75,0.75),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::new(0.75),//Vec3::set(0.75,0.75,0.75),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //mirror ball
                     radius: 16.5,
                     position: Vec3::set(27.0,16.5,47.0),
-                    emission: Vec3::zero(),
-                    color: Vec3::new(0.999),
-                    refl: ReflType::SPEC,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::new(0.999),
+                        refl: ReflType::SPEC,
+                    },
                 },
                 Sphere { //glass ball
                     radius: 16.5,
                     position: Vec3::set(73.0,16.5,78.0),
-                    emission: Vec3::zero(),
-                    color: Vec3::new(0.999),
-                    refl: ReflType::REFR,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::new(0.999),
+                        refl: ReflType::REFR,
+                    },
                 },
                 Sphere {
                     radius: 16.5,
                     position: Vec3::set(27.0,0.0,96.0),
-                    emission: Vec3::zero(),
-                    color: Vec3::new(0.99),
-                    refl: ReflType::DIFF,
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::new(0.99),
+                        refl: ReflType::DIFF,
+                    },
                 },
                 Sphere { //light
                     radius: 600.0,
                     position: Vec3::set(50.0,681.6-0.27,81.6),
-                    emission: Vec3::new(12.0),
-                    color: Vec3::zero(),
-                    refl: ReflType::LITE,
+                    material: Material {
+                        emission: Vec3::new(12.0),
+                        color: Vec3::zero(),
+                        refl: ReflType::LITE,
+                    },
                 },
             ]),
         }
@@ -500,12 +901,12 @@ impl PathTracer {
                                 }
                                 chunk[i*w + x] = chunk[i*w + x] + pixel;
                             }
-                            //thread_progress.fetch_add(1, Ordering::Relaxed);
+                            thread_progress.fetch_add(1, Ordering::Relaxed);
                         }
                     }));
             }
-            /*let mut p = 0;
-            print!("progress: 0.0%");
+            let mut p = 0;
+            print!("\nprogress: 0.0%");
             while p < (h-1) {
                 let np = progress.load(Ordering::Relaxed);
                 if p != np {
@@ -515,7 +916,7 @@ impl PathTracer {
                     p = np;
                 }
                 sleep(Duration::from_millis(50));
-            }*/
+            }
             for t in threads {
                 t.join();
             }
@@ -529,11 +930,11 @@ impl PathTracer {
 
 pub fn main() {
     let opengl = OpenGL::V3_2;
-    let width = 1024*2;
-    let height = 768*2;
+    let width = 800;//1024*2;
+    let height = 600;//768*2;
     let mut window: PistonWindow = WindowSettings::new(
             "rustpt",
-            [width/2,height/2]
+            [width,height]
         )
         .opengl(opengl)
         .exit_on_esc(true)
@@ -542,7 +943,7 @@ pub fn main() {
     let mut tracer = PathTracer::new(width,height);
     let mut samples_per_pass = 1;
     println!("Rendering...");
-    tracer.render(samples_per_pass);
+    //tracer.render(samples_per_pass);
     let buffer = tracer.buffer.iter().flat_map(|pixel|vec![to_u8(pixel.x),to_u8(pixel.y),to_u8(pixel.z),255]).collect();
     let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
     let mut texture = Texture::from_image(&mut window.factory,&img,&TextureSettings::new()).unwrap();
@@ -552,12 +953,14 @@ pub fn main() {
             print!("Pass {} with {} samples",count,samples_per_pass);
             tracer.render(samples_per_pass);
             count += 1;
-            samples_per_pass = std::cmp::min(1024,samples_per_pass * 2);
+            samples_per_pass = std::cmp::min(64,samples_per_pass * 2);
             clear([0.5, 0.0, 1.0, 1.0], g);
             let buffer = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
             let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
             texture.update(&mut g.encoder,&img).unwrap();
-            draw_image(&texture, c.transform.scale(0.5,0.5), g);
+            //draw_image(&texture, c.transform.scale(2.0,2.0), g);
+            //draw_image(&texture, c.transform.scale(0.5,0.5), g);
+            draw_image(&texture, c.transform, g);
             let rgb_buffer: Vec<u8> = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
             println!("...Saved");
             spawn(move || {
