@@ -2,8 +2,20 @@
     // See https://go.microsoft.com/fwlink/?LinkId=733558
     // for the documentation about the tasks.json format
     "version": "0.1.0",
-    "command": "cargo",
-    "isShellCommand": true,
-    "args": ["build","--release"],
-    "showOutput": "always"
+    "tasks": [
+        {
+            "taskName": "build",
+            "command": "cargo",
+            "isShellCommand": true,
+            "args": ["build","--release"],
+            "showOutput": "always"
+        },
+        {
+            "taskName": "run",
+            "command": "cargo",
+            "isShellCommand": true,
+            "args": ["run","--release"],
+            "showOutput": "always"
+        }
+    ]
 }

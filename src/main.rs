@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
 use std::path::Path;
+use std::f64;
 
 extern crate tobj;
 
@@ -95,6 +96,10 @@ struct Triangle {
 impl Triangle {
     fn iter(&self) -> std::slice::Iter<Vec3> {
         self.points.iter()
+    }
+
+    fn normal(&self) -> Vec3 {
+        (self.points[1]-self.points[0]).cross(self.points[2]-self.points[0])
     }
 }
 
@@ -217,8 +222,53 @@ impl AABB {
         tmax >= tmin
 
     }
+    fn fminmax(iter: std::slice::Iter<Vec3>) -> (Vec3,Vec3) {
+        let mut min = Vec3::new(std::f64::MIN);
+        let mut max = Vec3::new(std::f64::MAX);
+        for v in iter {
+            if *v < min {
+                min = *v;
+            }
+            if *v > max {
+                max = *v;
+            }
+        }
+        (min, max)
+    }
     fn contains_tri(&self, tri: &Triangle) -> bool {
-        self.contains_point(&tri.points[0]) || self.contains_point(&tri.points[1]) || self.contains_point(&tri.points[2])
+        //self.contains_point(&tri.points[0]) || self.contains_point(&tri.points[1]) || self.contains_point(&tri.points[2])
+        
+        let (start, end) = self.corners();
+        let axes = [ Vec3::set(1.0,0.0,0.0),Vec3::set(0.0,1.0,0.0),Vec3::set(0.0,0.0,1.0) ];
+        //Test the box normals
+        for (axis,bounds) in axes.iter().zip([self.x,self.y,self.z].iter()) {
+            //let min = dots.min().unwrap();
+            //let max = dots.max().unwrap();
+            let min = tri.points.iter().map(|x|axis.dot(*x)).fold(f64::INFINITY,f64::min);
+            let max = tri.points.iter().map(|x|axis.dot(*x)).fold(f64::NEG_INFINITY,f64::max);
+            if min > bounds.1 || max < bounds.0 {
+                return false;
+            }
+        }
+        //Test the triangle normal
+        let offset = tri.normal().dot(tri.points[0]);
+        let corners = self.all_corners();
+        let min = corners.iter().map(|x|tri.normal().dot(*x)).fold(f64::INFINITY,f64::min);
+        let max = corners.iter().map(|x|tri.normal().dot(*x)).fold(f64::NEG_INFINITY,f64::max);
+        if  max < offset || min > offset {
+            return false;
+        }
+        //test the edge cross products
+        let edges = [ tri.points[0] - tri.points[1], tri.points[1] - tri.points[2], tri.points[2] - tri.points[0] ];
+        for edge in edges.iter() {
+            for axis in axes.iter() {
+                let w = edge.cross(*axis);
+                if corners.iter().map(|x|w.dot(*x)).fold(f64::NEG_INFINITY,f64::max) < tri.points.iter().map(|x|w.dot(*x)).fold(f64::INFINITY,f64::min) || corners.iter().map(|x|w.dot(*x)).fold(f64::INFINITY,f64::min) > tri.points.iter().map(|x|w.dot(*x)).fold(f64::NEG_INFINITY,f64::max) {
+                    return false;
+                }
+            }
+        }
+        true
     }
     fn biggest_dim(&self, avg: Vec3) -> (Axis,f64) {
         let diff = Vec3::set(self.x.1,self.y.1,self.z.1) - Vec3::set(self.x.0,self.y.0,self.z.0);
@@ -243,6 +293,23 @@ impl AABB {
 
     pub fn valid(&self) -> bool {
         self.x.0 < self.x.1 && self.y.0 < self.y.1 && self.z.0 < self.z.1
+    }
+
+    pub fn corners(&self) -> (Vec3,Vec3) {
+        (Vec3::set(self.x.0,self.y.0,self.z.0),Vec3::set(self.x.1,self.y.1,self.z.1))
+    }
+
+    pub fn all_corners(&self) -> [Vec3; 8] {
+        let mut cnrs = [Vec3::zero(); 8];
+        let mut idx = 0;
+        for x in &[self.x.0,self.x.1] {
+            for y in &[self.y.0,self.y.1] {
+                for z in &[self.z.0,self.z.1] {
+                    cnrs[idx] = Vec3::set(*x,*y,*z);
+                }
+            }
+        }
+        cnrs
     }
 }
 
@@ -306,7 +373,7 @@ impl KDTree {
         }
         let (biggest_axis, sval) = aabb.biggest_dim(sum * (1.0/count));
         let (la, ga) = aabb.split_biggest(sum * (1.0/count));
-        println!("count:{} sval:{} axis:{:?} la:{:?} ga:{:?}",count,sval,biggest_axis,la,ga);
+        //println!("count:{} sval:{} axis:{:?} la:{:?} ga:{:?}",count,sval,biggest_axis,la,ga);
         if depth < 3 && count > 18.0 && la.valid() && ga.valid() { //arbitrarily picked 3 triangles as leaf size
             Box::new(KDNode::Branch(KDBranch{
                 aabb: aabb,
@@ -380,7 +447,7 @@ impl KDTree {
     }
 }
 
-#[inline(always)]
+//#[inline(always)]
 fn intersect_triangle<'a>(triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64) {
     let inf = 1e20f64;
     let EPSILON = 0.000001f64;
@@ -445,15 +512,8 @@ fn intersect_val<'a>(spheres: &'a Vec<Sphere>, r: Ray)  -> (Option< &'a Sphere>,
     (obj, t)
 }
 
-static PI: f64 = 3.14159265358979323;
-
-#[allow(non_snake_case)] //allow variable naming here to match smallpt
-fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
-    let mut depth: i32 = -1;
-    let mut radiance = Vec3::new(0.0);
-    let mut atten = Vec3::new(1.0);
-    let mut r = ray;
-    let (obj, mat) = tobj::load_obj(&Path::new("teapot.obj")).unwrap();
+fn load_mesh(path: &str) -> (Vec<Triangle>, KDTree) {
+    let (obj, mat) = tobj::load_obj(&Path::new(path)).unwrap();
     let obj_tris = obj.into_iter().flat_map(|x| {
         let mut tris = Vec::new();
         for f in 0..x.mesh.indices.len() / 3 {
@@ -470,6 +530,19 @@ fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
         tris
     }).collect();
     let kdtree = KDTree::build(&obj_tris);
+    (obj_tris, kdtree)
+}
+
+static PI: f64 = 3.14159265358979323;
+
+#[allow(non_snake_case)] //allow variable naming here to match smallpt
+fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ray: Ray) -> Vec3 {
+    let mut depth: i32 = -1;
+    let mut radiance = Vec3::new(0.0);
+    let mut atten = Vec3::new(1.0);
+    let mut r = ray;
+    let (obj_tris, kdtree) = mesh_data;
+    
     /*let cube:Vec<Triangle> = make_cube().into_iter().map(|x|Triangle { points:[
             x.points[0] * 20.0 + Vec3::set(50.0,20.0,50.0),
             x.points[1] * 20.0 + Vec3::set(50.0,20.0,50.0),
@@ -479,6 +552,7 @@ fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
         depth = depth + 1;
         let (hit, dist) = intersect_val(spheres,r);
         //let (hit2, dist2) = intersect_triangle(&obj_tris, r);
+        //let (hit2, dist2): (Option<Triangle>,f64) = (None,1e20f64);
         let (hit2, dist2) = kdtree.intersect(&obj_tris, r);
         //let hit2: Option<Triangle> = None; let dist2 = std::f64::INFINITY;
 
@@ -578,9 +652,9 @@ fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
                 }
                 let ddn = r.direction.dot(nl);
                 let cos2t = 1.0 - nnt*nnt*(1.0-ddn*ddn);
+                radiance = radiance + (atten * mtl.emission);
                 if cos2t < 0.0 { //total internal reflection
                     //mtl.emission + f * radiance(spheres,&reflRay,depth)
-                    radiance = radiance + (atten * mtl.emission);
                     atten = atten * f;
                     r = reflRay;
                 } else {
@@ -615,12 +689,12 @@ fn radiance_iter(spheres: &Vec<Sphere>, ray: Ray) -> Vec3 {
                         radiance(spheres,&reflRay,depth)*Re + radiance(spheres,&Ray { origin: x, direction: tdir }, depth)*Tr
                     };
                     mtl.emission + f * tmp*/
-                    radiance = radiance + (atten * mtl.emission);
+                    //radiance = radiance + (atten * mtl.emission);
                     if rand::random::<f64>() < P {
                         atten = atten * RP;
                         r = reflRay;
                     } else {
-                        atten = atten * TP;
+                        atten = atten * TP * mtl.color;
                         r = Ray { origin: x, direction: tdir };
                     }
                 }
@@ -739,6 +813,7 @@ fn radiance(spheres: &Vec<Sphere>, r: &Ray, depth: &mut i32) -> Vec3 {
 
 pub struct PathTracer {
     spheres: Arc<Vec<Sphere>>,
+    mesh_data: (Vec<Triangle>, KDTree),
     width: usize,
     height: usize,
     samples: u32,
@@ -752,6 +827,7 @@ impl PathTracer {
             height: height as usize,
             samples: 0,
             buffer: vec![Vec3::new(0.0);(width*height) as usize],
+            mesh_data: load_mesh("cube.obj"),
             spheres: Arc::new(vec![
                 Sphere { //left wall
                     radius: 1e5,
@@ -825,13 +901,40 @@ impl PathTracer {
                         refl: ReflType::REFR,
                     },
                 },
-                Sphere {
+                Sphere { //gold hemisphere
                     radius: 16.5,
                     position: Vec3::set(27.0,0.0,96.0),
                     material: Material {
                         emission: Vec3::zero(),
-                        color: Vec3::new(0.99),
-                        refl: ReflType::DIFF,
+                        color: Vec3::set(1.000, 0.766, 0.336),
+                        refl: ReflType::SPEC,
+                    },
+                },
+                Sphere { //green glass
+                    radius: 8.0,
+                    position: Vec3::set(50.0,8.0,110.0),
+                    material: Material {
+                        emission: Vec3::set(0.0,0.0,0.0),
+                        color: Vec3::set(0.56,0.99,0.56),
+                        refl: ReflType::REFR,
+                    },
+                },
+                Sphere { //purple glass
+                    radius: 8.0,
+                    position: Vec3::set(8.0,8.0,110.0),
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.75,0.50,1.0),
+                        refl: ReflType::REFR,
+                    },
+                },
+                Sphere { //purple glass
+                    radius: 8.0,
+                    position: Vec3::set(92.0,8.0,110.0),
+                    material: Material {
+                        emission: Vec3::zero(),
+                        color: Vec3::set(0.75,0.50,1.0),
+                        refl: ReflType::REFR,
                     },
                 },
                 Sphere { //light
@@ -849,6 +952,8 @@ impl PathTracer {
 
     pub fn render(&mut self, samples_per_pass: u32) {
         let ref spheres = self.spheres;
+        let (ref tris,ref kdtree) = self.mesh_data;
+        let mesh_data = (tris,kdtree);
         let w = self.width;
         let h = self.height;
         self.samples += samples_per_pass;
@@ -894,7 +999,7 @@ impl PathTracer {
                                             let d = cx * ( ( ((sx as f64)+0.5 + dx ) / 2.0 + (x as f64)) / (w as f64) - 0.5) +
                                                     cy * ( ( ((sy as f64)+0.5 + dy ) / 2.0 + (y as f64)) / (h as f64) - 0.5) + cam.direction;
                                             //r = r + radiance(&my_spheres, &Ray{origin:cam.origin+(d*140.0),direction:d.normalize()},&mut 0) * (1.0/(samps as f64));
-                                            r = r + radiance_iter(&my_spheres, Ray{origin:cam.origin+(d*140.0),direction:d.normalize()});
+                                            r = r + radiance_iter(&my_spheres, mesh_data, Ray{origin:cam.origin+(d*140.0),direction:d.normalize()});
                                         }
                                         pixel = pixel + (Vec3::set(r.x,r.y,r.z)*0.25);
                                     }
@@ -930,8 +1035,8 @@ impl PathTracer {
 
 pub fn main() {
     let opengl = OpenGL::V3_2;
-    let width = 800;//1024*2;
-    let height = 600;//768*2;
+    let width = 1440;//1024*2;
+    let height = 1080;//768*2;
     let mut window: PistonWindow = WindowSettings::new(
             "rustpt",
             [width,height]
