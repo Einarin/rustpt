@@ -3,8 +3,6 @@ extern crate crossbeam;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
-mod vec3; //split into it's own file for readability
-use vec3::*;
 use std::thread::sleep;
 use std::thread::spawn;
 use std::time::{Duration, Instant};
@@ -14,64 +12,17 @@ use std::path::Path;
 use std::f64;
 
 extern crate tobj;
-
 extern crate piston_window;
 extern crate image;
 use piston_window::{PistonWindow, WindowSettings, Texture, OpenGL, Transformed, clear, image as draw_image};
 use piston_window::texture::TextureSettings;
 
-#[derive(Copy, Clone)]
-struct Ray {
-    origin: Vec3,
-    direction: Vec3,
-}
-
-#[derive(Copy, Clone)]
-enum ReflType {
-    DIFF,
-    SPEC,
-    REFR,
-    LITE
-}
-
-#[derive(Copy, Clone)]
-struct Material {
-    emission: Vec3,
-    color: Vec3,
-    refl: ReflType,
-}
-
-struct Sphere {
-    radius: f64,
-    position: Vec3,
-    material: Material,
-}
-
-impl Sphere {
-    #[inline(always)]
-    pub fn intersect(&self, r: &Ray) -> Option<f64> {
-        let op = self.position - r.origin; // Solve t^2*d.d + 2*t*(o-p).d + (o-p).(o-p)-R^2 = 0
-        let eps = 1e-4f64;
-        let b = op.dot(r.direction);
-        let mut det = (b*b) + (self.radius * self.radius) - op.dot(op);
-        if det < 0.0 {
-            Option::None
-        } else {
-            det = f64::sqrt(det);
-            let t = b - det;
-            if t > eps {
-                Option::Some(t)
-            } else {
-                let t = b + det;
-                if t > eps {
-                    Option::Some(t)
-                } else {
-                    Option::None
-                }
-            }
-        }
-    }
-}
+mod vec3;
+use vec3::*;
+mod primitives;
+use primitives::*;
+mod kdtree;
+use kdtree::*;
 
 fn clamp(x: f64) -> f64 {
     match x {
@@ -89,441 +40,18 @@ fn to_u8(x: f64) -> u8 {
     (f64::powf(clamp(x),1.0/2.2)*255.0 + 0.5) as u8
 }
 
-struct Triangle {
-    points: [Vec3; 3],
-}
-
-impl Triangle {
-    fn iter(&self) -> std::slice::Iter<Vec3> {
-        self.points.iter()
-    }
-
-    fn normal(&self) -> Vec3 {
-        (self.points[1]-self.points[0]).cross(self.points[2]-self.points[0])
-    }
-}
-
-fn make_cube() -> Vec<Triangle> {
-    vec![
-        //front
-        Triangle { points:[ 
-            Vec3::set(-0.5, -0.5, -0.5),  
-            Vec3::set( -0.5,  0.5, -0.5),  
-            Vec3::set(  0.5,  0.5, -0.5),
-        ]},
-        Triangle { points:[ 
-            Vec3::set( -0.5,  0.5, -0.5),  
-            Vec3::set(  0.5,  0.5, -0.5),
-            Vec3::set(  0.5, -0.5, -0.5),
-        ]},  
-        //back
-        Triangle { points:[
-            Vec3::set( 0.5, -0.5, 0.5 ),
-            Vec3::set( 0.5,  0.5, 0.5 ),
-            Vec3::set( -0.5,  0.5, 0.5 ),
-        ]},
-        Triangle { points:[
-            Vec3::set( 0.5,  0.5, 0.5 ),
-            Vec3::set( -0.5,  0.5, 0.5 ),
-            Vec3::set( -0.5, -0.5, 0.5 ),
-        ]},
-        //RIGHT
-        Triangle { points:[								
-            Vec3::set( 0.5, -0.5, -0.5 ),
-            Vec3::set( 0.5,  0.5, -0.5 ),
-            Vec3::set( 0.5,  0.5,  0.5 ),
-        ]},
-        Triangle { points:[	
-            Vec3::set( 0.5,  0.5, -0.5 ),
-            Vec3::set( 0.5,  0.5,  0.5 ),
-            Vec3::set( 0.5, -0.5,  0.5 ),
-        ]},
-        //LEFT
-        Triangle { points:[	
-            Vec3::set( -0.5, -0.5,  0.5 ),
-            Vec3::set( -0.5,  0.5,  0.5 ),
-            Vec3::set( -0.5,  0.5, -0.5 ),
-        ]},
-        Triangle { points:[	
-            Vec3::set( -0.5,  0.5,  0.5 ),
-            Vec3::set( -0.5,  0.5, -0.5 ),
-            Vec3::set( -0.5, -0.5, -0.5 ),
-        ]},
-        //TOP				
-        Triangle { points:[							 
-            Vec3::set(  0.5,  0.5,  0.5 ),
-            Vec3::set(  0.5,  0.5, -0.5 ),
-            Vec3::set( -0.5,  0.5, -0.5 ),
-        ]},
-        Triangle { points:[	
-            Vec3::set(  0.5,  0.5, -0.5 ),
-            Vec3::set( -0.5,  0.5, -0.5 ),
-            Vec3::set( -0.5,  0.5,  0.5 ),
-        ]},
-        //BOTTOM
-        Triangle { points:[	
-            Vec3::set(  0.5, -0.5, -0.5 ),
-            Vec3::set(  0.5, -0.5,  0.5 ),
-            Vec3::set( -0.5, -0.5,  0.5 ),
-        ]},
-        Triangle { points:[	
-            Vec3::set(  0.5, -0.5,  0.5 ),
-            Vec3::set( -0.5, -0.5,  0.5 ),
-            Vec3::set( -0.5, -0.5, -0.5 ),
-        ]},
-    ]
-}
-#[derive(Debug)]
-struct AABB {
-    x: (f64,f64),
-    y: (f64, f64),
-    z: (f64,f64),
-}
-
-impl AABB {
-    fn split(&self, split_axis:Axis, split_val: f64) -> (AABB,AABB) {
-        let mut lt = AABB {
-            x: self.x,
-            y: self.y,
-            z: self.z,
-        };
-        let mut gt = AABB {
-            x: self.x,
-            y: self.y,
-            z: self.z,
-        };
-        match split_axis {
-            Axis::X => { lt.x.1 = split_val; gt.x.0 = split_val; },
-            Axis::Y => { lt.y.1 = split_val; gt.y.0 = split_val; },
-            Axis::Z => { lt.z.1 = split_val; gt.z.0 = split_val; },
-        }
-        (lt,gt)
-    }
-    fn contains_point(&self, point: &Vec3) -> bool {
-        point.x > self.x.0 && point.x < self.x.1
-            && point.y > self.y.0 && point.y < self.y.1
-            && point.z > self.z.0 && point.z < self.z.1
-    }
-    fn contains_ray(&self, ray: Ray) -> bool {
-        let mut tmin = -std::f64::INFINITY;
-        let mut tmax = std::f64::INFINITY;
-        let tx1 = (self.x.0 - ray.origin.x)/ray.direction.x;
-        let tx2 = (self.x.1 - ray.origin.x)/ray.direction.x;
-        tmin = f64::max(tmin, f64::min(tx1,tx2));
-        tmax = f64::min(tmax, f64::max(tx1,tx2));
-        let ty1 = (self.y.0 - ray.origin.y)/ray.direction.y;
-        let ty2 = (self.y.1 - ray.origin.y)/ray.direction.y;
-        tmin = f64::max(tmin, f64::min(ty1,ty2));
-        tmax = f64::min(tmax, f64::max(ty1,ty2));
-        let tz1 = (self.z.0 - ray.origin.z)/ray.direction.z;
-        let tz2 = (self.z.1 - ray.origin.z)/ray.direction.z;
-        tmin = f64::max(tmin, f64::min(tz1,tz2));
-        tmax = f64::min(tmax, f64::max(tz1,tz2));
-        tmax >= tmin
-
-    }
-    fn fminmax(iter: std::slice::Iter<Vec3>) -> (Vec3,Vec3) {
-        let mut min = Vec3::new(std::f64::MIN);
-        let mut max = Vec3::new(std::f64::MAX);
-        for v in iter {
-            if *v < min {
-                min = *v;
-            }
-            if *v > max {
-                max = *v;
-            }
-        }
-        (min, max)
-    }
-    fn contains_tri(&self, tri: &Triangle) -> bool {
-        //self.contains_point(&tri.points[0]) || self.contains_point(&tri.points[1]) || self.contains_point(&tri.points[2])
-        
-        let (start, end) = self.corners();
-        let axes = [ Vec3::set(1.0,0.0,0.0),Vec3::set(0.0,1.0,0.0),Vec3::set(0.0,0.0,1.0) ];
-        //Test the box normals
-        for (axis,bounds) in axes.iter().zip([self.x,self.y,self.z].iter()) {
-            //let min = dots.min().unwrap();
-            //let max = dots.max().unwrap();
-            let min = tri.points.iter().map(|x|axis.dot(*x)).fold(f64::INFINITY,f64::min);
-            let max = tri.points.iter().map(|x|axis.dot(*x)).fold(f64::NEG_INFINITY,f64::max);
-            if min > bounds.1 || max < bounds.0 {
-                return false;
-            }
-        }
-        //Test the triangle normal
-        let offset = tri.normal().dot(tri.points[0]);
-        let corners = self.all_corners();
-        let min = corners.iter().map(|x|tri.normal().dot(*x)).fold(f64::INFINITY,f64::min);
-        let max = corners.iter().map(|x|tri.normal().dot(*x)).fold(f64::NEG_INFINITY,f64::max);
-        if  max < offset || min > offset {
-            return false;
-        }
-        //test the edge cross products
-        let edges = [ tri.points[0] - tri.points[1], tri.points[1] - tri.points[2], tri.points[2] - tri.points[0] ];
-        for edge in edges.iter() {
-            for axis in axes.iter() {
-                let w = edge.cross(*axis);
-                if corners.iter().map(|x|w.dot(*x)).fold(f64::NEG_INFINITY,f64::max) < tri.points.iter().map(|x|w.dot(*x)).fold(f64::INFINITY,f64::min) || corners.iter().map(|x|w.dot(*x)).fold(f64::INFINITY,f64::min) > tri.points.iter().map(|x|w.dot(*x)).fold(f64::NEG_INFINITY,f64::max) {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-    fn biggest_dim(&self, avg: Vec3) -> (Axis,f64) {
-        let diff = Vec3::set(self.x.1,self.y.1,self.z.1) - Vec3::set(self.x.0,self.y.0,self.z.0);
-        if diff.x > diff.y {
-            if diff.x > diff.z {
-                (Axis::X,avg.x)
-            } else {
-                (Axis::Z,avg.z)
-            }
-        } else {
-            if diff.y > diff.z {
-                (Axis::Y,avg.y)
-            } else {
-                (Axis::Z,avg.z)
-            }
-        }
-    }
-    fn split_biggest(&self, avg: Vec3) -> (AABB,AABB){
-        let (biggest_axis, sval) = self.biggest_dim(avg);
-        self.split(biggest_axis,sval)
-    }
-
-    pub fn valid(&self) -> bool {
-        self.x.0 < self.x.1 && self.y.0 < self.y.1 && self.z.0 < self.z.1
-    }
-
-    pub fn corners(&self) -> (Vec3,Vec3) {
-        (Vec3::set(self.x.0,self.y.0,self.z.0),Vec3::set(self.x.1,self.y.1,self.z.1))
-    }
-
-    pub fn all_corners(&self) -> [Vec3; 8] {
-        let mut cnrs = [Vec3::zero(); 8];
-        let mut idx = 0;
-        for x in &[self.x.0,self.x.1] {
-            for y in &[self.y.0,self.y.1] {
-                for z in &[self.z.0,self.z.1] {
-                    cnrs[idx] = Vec3::set(*x,*y,*z);
-                }
-            }
-        }
-        cnrs
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum Axis {
-    X,
-    Y,
-    Z,
-}
-
-struct KDBranch {
-    aabb: AABB,
-    split_axis: Axis,
-    split_val: f64,
-    child_lt: Box<KDNode>,
-    child_gt: Box<KDNode>,
-}
-
-struct KDLeaf {
-    tri_inds: Vec<usize>,
-}
-
-enum KDNode {
-    Branch(KDBranch),
-    Leaf(KDLeaf),
-}
-
-struct KDTree {
-    root: KDNode,
-}
-
-impl KDTree {
-    fn biggest_dim(diff: Vec3, avg: Vec3) -> (Axis,f64) {
-        if diff.x > diff.y {
-            if diff.x > diff.z {
-                (Axis::X,avg.x)
-            } else {
-                (Axis::Z,avg.z)
-            }
-        } else {
-            if diff.y > diff.z {
-                (Axis::Y,avg.y)
-            } else {
-                (Axis::Z,avg.z)
-            }
-        }
-    }
-    fn build_helper(triangles: &Vec<Triangle>, aabb:AABB, depth: usize) -> Box<KDNode> {
-        let mut sum = Vec3::zero();
-        let mut count:f64 = 0.0;
-        let mut indices = Vec::new();
-        for i in 0..triangles.len() {
-            let ref tri = triangles[i];
-            if aabb.contains_tri(tri) {
-                indices.push(i);
-                for pt in tri.iter() {
-                    sum = sum + *pt;
-                    count += 1.0;
-                }
-            }
-        }
-        let (biggest_axis, sval) = aabb.biggest_dim(sum * (1.0/count));
-        let (la, ga) = aabb.split_biggest(sum * (1.0/count));
-        //println!("count:{} sval:{} axis:{:?} la:{:?} ga:{:?}",count,sval,biggest_axis,la,ga);
-        if depth < 3 && count > 18.0 && la.valid() && ga.valid() { //arbitrarily picked 3 triangles as leaf size
-            Box::new(KDNode::Branch(KDBranch{
-                aabb: aabb,
-                split_axis: biggest_axis,
-                split_val: sval,
-                child_lt: KDTree::build_helper(triangles,la,depth+1),
-                child_gt: KDTree::build_helper(triangles,ga,depth+1),
-                }))
-        } else {
-            Box::new(KDNode::Leaf(KDLeaf {
-                tri_inds: indices,
-            }))
-        }
-    }
-
-    pub fn build(triangles: &Vec<Triangle>) -> KDTree {
-        let mut mins = Vec3::zero();
-        let mut maxs = Vec3::zero();
-        let mut sum = Vec3::zero();
-        for tri in triangles {
-            for pt in tri.iter() {
-                mins.x = f64::min(mins.x,pt.x);
-                mins.y = f64::min(mins.y,pt.y);
-                mins.z = f64::min(mins.z,pt.z);
-                maxs.x = f64::max(maxs.x,pt.x);
-                maxs.y = f64::max(maxs.y,pt.y);
-                maxs.z = f64::max(maxs.z,pt.z);
-                sum = sum + *pt;
-            }
-        }
-        let avg = sum * (1.0 / (triangles.len() * 3) as f64);
-        let diff = maxs - mins;
-        let (biggest_axis, sval) = KDTree::biggest_dim(diff, avg);
-        let aabb = AABB {
-            x:(mins.x,maxs.x),
-            y:(mins.y,maxs.y),
-            z:(mins.z,maxs.z),
-        };
-        let (la,ga) = aabb.split(biggest_axis,sval);
-        KDTree {
-            root: KDNode::Branch(KDBranch{
-                aabb: aabb,
-                split_axis: biggest_axis,
-                split_val: sval,
-            child_lt: KDTree::build_helper(triangles,la,0),
-            child_gt: KDTree::build_helper(triangles,ga,0),
-            }),
-        }
-    }
-
-    fn intersect_helper<'a>(triangles: &'a Vec<Triangle>, ray: Ray, node: &KDNode,depth: usize) -> (Option<&'a Triangle>, f64){
-        match *node {
-            KDNode::Branch(ref branch) => {
-                if !branch.aabb.contains_ray(ray) || depth > 10 {
-                    return (None,std::f64::INFINITY);
-                }
-                if let (Some(x),y) = KDTree::intersect_helper(triangles, ray, &*branch.child_lt,depth+1) {
-                    (Some(x),y)
-                } else {
-                    KDTree::intersect_helper(triangles, ray, &*branch.child_gt,depth+1)
-                }
-            },
-            KDNode::Leaf(ref leaf) => {
-                intersect_triangle(triangles,ray)
-            },
-        }
-    }
-
-    pub fn intersect<'a>(&self, triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64){
-        KDTree::intersect_helper(triangles,ray,&self.root,0)
-    }
-}
-
-//#[inline(always)]
-fn intersect_triangle<'a>(triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64) {
-    let inf = 1e20f64;
-    let EPSILON = 0.000001f64;
-    let mut depth = inf;
-    let mut obj = Option::None;
-    for triangle in triangles {
-        let e1 = triangle.points[1] - triangle.points[0];
-        let e2 = triangle.points[2] - triangle.points[0];
-        let p = ray.direction.cross(e2);
-        let det = e1.dot(p);
-        if det > -EPSILON && det < EPSILON {
-            continue;
-        }
-        let inv_det = 1.0 / det;
-        let t = ray.origin - triangle.points[0];
-        let u = t.dot(p) * inv_det;
-        if u < 0.0 || u > 1.0 {
-            continue;
-        }
-        let q = t.cross(e1);
-        let v = ray.direction.dot(q) * inv_det;
-        if v < 0.0 || (u + v) > 1.0 {
-            continue;
-        }
-        let potential_depth = e2.dot(q) * inv_det;
-        if potential_depth > EPSILON && potential_depth < depth {
-            obj = Option::Some(triangle);
-            depth = potential_depth;
-        }
-    }
-    (obj, depth)
-}
-
-#[inline(always)]
-fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>, f64) {
-    let inf = 1e20f64;
-    let mut t = inf;
-    let mut obj = Option::None;
-    for s in spheres {
-        if let Some(d) = s.intersect(r) {
-            if d < t {
-                t = d;
-                obj = Option::Some(s);
-            }
-        }
-    }
-    (obj, t)
-}
-#[inline(always)]
-fn intersect_val<'a>(spheres: &'a Vec<Sphere>, r: Ray)  -> (Option< &'a Sphere>, f64) {
-    let inf = 1e20f64;
-    let mut t = inf;
-    let mut obj = Option::None;
-    for s in spheres {
-        if let Some(d) = s.intersect(&r) {
-            if d < t {
-                t = d;
-                obj = Option::Some(s);
-            }
-        }
-    }
-    (obj, t)
-}
-
 fn load_mesh(path: &str) -> (Vec<Triangle>, KDTree) {
     let (obj, mat) = tobj::load_obj(&Path::new(path)).unwrap();
-    let obj_tris = obj.into_iter().flat_map(|x| {
+    let obj_tris = obj.into_iter().flat_map(|part| {
         let mut tris = Vec::new();
-        for f in 0..x.mesh.indices.len() / 3 {
+        for f in 0..part.mesh.indices.len() / 3 {
             let mut tri = Vec::new();
-            for ind in &x.mesh.indices[3*f..3*f+3] {
-                let v = Vec3::set(x.mesh.positions[(3* *ind) as usize]as f64,
-                    x.mesh.positions[(3* *ind) as usize +1]as f64,
-                    x.mesh.positions[(3* *ind) as usize +2]as f64,
-                );
-                tri.push(v * 20.0 + Vec3::set(50.0,20.0,50.0));
+            for ind in &part.mesh.indices[3*f..3*f+3] {
+                let x = part.mesh.positions[(3* *ind) as usize]as f64;
+                let y = part.mesh.positions[(3* *ind) as usize +1]as f64;
+                let z = part.mesh.positions[(3* *ind) as usize +2]as f64;
+                let v = Vec3::set(-x,z,y);
+                tri.push(v * 2.0 + Vec3::set(65.0,0.0,70.0));
             }
             tris.push(Triangle { points: [tri[0],tri[1],tri[2]]});
         }
@@ -531,6 +59,14 @@ fn load_mesh(path: &str) -> (Vec<Triangle>, KDTree) {
     }).collect();
     let kdtree = KDTree::build(&obj_tris);
     (obj_tris, kdtree)
+}
+
+fn abs(val: f64) -> f64 {
+    if val < 0.0 {
+        val * -1.0
+    } else {
+        val
+    }
 }
 
 static PI: f64 = 3.14159265358979323;
@@ -556,10 +92,11 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ra
         let (hit2, dist2) = kdtree.intersect(&obj_tris, r);
         //let hit2: Option<Triangle> = None; let dist2 = std::f64::INFINITY;
 
-        let x = r.origin+ (r.direction*dist);
+        let x;
         let n;
         let mtl;
         if dist2 < dist {
+            x = r.origin+ (r.direction*dist2);
             if let Some(triangle) = hit2 {
                 //ReflType::DIFF
                 let e1 = triangle.points[1] - triangle.points[0];
@@ -568,16 +105,17 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ra
                 let r1 = 2.0 * PI * rand::random::<f64>();
                 let r2 = rand::random::<f64>();
                 let r2s = f64::sqrt(r2);
-                n = norm.normalize().abs();
+                n = norm.normalize();
                 mtl = Material {
-                    emission: Vec3::zero(),
-                    color: Vec3::set(0.25,0.75,0.25),
+                    emission: Vec3::zero(),//Vec3::set(0.25,0.75,0.25) * abs(n.dot(x.normalize())),//Vec3::zero(),
+                    color: Vec3::set(0.1,0.2,0.4),
                     refl: ReflType::DIFF,
                 }
             } else {
                 break;
             }
         } else {
+            x = r.origin+ (r.direction*dist);
             if let Some(circle) = hit {
                 let un = x - circle.position;
                 n = un.normalize();
@@ -600,9 +138,9 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ra
             f.z
         };
         depth +=1;
-        if depth > 5 { //begin russian roulette after 5 bounces
+        if depth > 4 { //begin russian roulette after 5 bounces
                         //and terminate at 10 bounces
-            if depth < 10 && rand::random::<f64>() < p {
+            if depth < 8 && rand::random::<f64>() < p * atten.length() {
                 f = f * (1.0/p);
             } else {
                 radiance = radiance + atten * mtl.emission;
@@ -827,7 +365,7 @@ impl PathTracer {
             height: height as usize,
             samples: 0,
             buffer: vec![Vec3::new(0.0);(width*height) as usize],
-            mesh_data: load_mesh("cube.obj"),
+            mesh_data: load_mesh("teapot.obj"),
             spheres: Arc::new(vec![
                 Sphere { //left wall
                     radius: 1e5,
@@ -892,7 +430,7 @@ impl PathTracer {
                         refl: ReflType::SPEC,
                     },
                 },
-                Sphere { //glass ball
+                /*Sphere { //glass ball
                     radius: 16.5,
                     position: Vec3::set(73.0,16.5,78.0),
                     material: Material {
@@ -900,7 +438,7 @@ impl PathTracer {
                         color: Vec3::new(0.999),
                         refl: ReflType::REFR,
                     },
-                },
+                },*/
                 Sphere { //gold hemisphere
                     radius: 16.5,
                     position: Vec3::set(27.0,0.0,96.0),
@@ -910,7 +448,7 @@ impl PathTracer {
                         refl: ReflType::SPEC,
                     },
                 },
-                Sphere { //green glass
+                /*Sphere { //green glass
                     radius: 8.0,
                     position: Vec3::set(50.0,8.0,110.0),
                     material: Material {
@@ -936,7 +474,7 @@ impl PathTracer {
                         color: Vec3::set(0.75,0.50,1.0),
                         refl: ReflType::REFR,
                     },
-                },
+                },*/
                 Sphere { //light
                     radius: 600.0,
                     position: Vec3::set(50.0,681.6-0.27,81.6),
@@ -1035,11 +573,12 @@ impl PathTracer {
 
 pub fn main() {
     let opengl = OpenGL::V3_2;
-    let width = 1440;//1024*2;
-    let height = 1080;//768*2;
+    let width = 640;//1024*2;
+    let height = 480;//768*2;
+    let scale = 1;
     let mut window: PistonWindow = WindowSettings::new(
             "rustpt",
-            [width,height]
+            [width*scale,height*scale]
         )
         .opengl(opengl)
         .exit_on_esc(true)
@@ -1063,9 +602,9 @@ pub fn main() {
             let buffer = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
             let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
             texture.update(&mut g.encoder,&img).unwrap();
-            //draw_image(&texture, c.transform.scale(2.0,2.0), g);
+            draw_image(&texture, c.transform.scale(scale as f64,scale as f64), g);
             //draw_image(&texture, c.transform.scale(0.5,0.5), g);
-            draw_image(&texture, c.transform, g);
+            //draw_image(&texture, c.transform, g);
             let rgb_buffer: Vec<u8> = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
             println!("...Saved");
             spawn(move || {

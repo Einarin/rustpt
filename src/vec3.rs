@@ -73,6 +73,13 @@ impl Mul<f64> for Vec3 {
     }
 }
 
+impl Mul<Vec3> for f64 {
+    type Output = Vec3;
+    fn mul(self, _rhs: Vec3) -> Vec3 {
+        Vec3 { x: self * _rhs.x, y: self * _rhs.y, z: self * _rhs.z }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
