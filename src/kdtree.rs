@@ -1,5 +1,11 @@
 use std;
 use std::f64;
+use std::path::Path;
+use std::ops::IndexMut;
+use std::cmp::max;
+
+use tobj;
+
 
 use vec3::*;
 use primitives::*;
@@ -67,9 +73,8 @@ impl AABB {
         (min, max)
     }
     fn contains_tri(&self, tri: &Triangle) -> bool {
+        //The naive check of the corners is _not_ correct
         //self.contains_point(&tri.points[0]) || self.contains_point(&tri.points[1]) || self.contains_point(&tri.points[2])
-        
-        let (start, end) = self.corners();
         let axes = [ Vec3::set(1.0,0.0,0.0),Vec3::set(0.0,1.0,0.0),Vec3::set(0.0,0.0,1.0) ];
         //Test the box normals
         for (axis,bounds) in axes.iter().zip([self.x,self.y,self.z].iter()) {
@@ -100,6 +105,11 @@ impl AABB {
             }
         }
         true
+    }
+    fn intersects(&self, other: &AABB) -> bool {
+        f64::max(self.x.0,other.x.0) < f64::min(self.x.1,other.x.1)
+        && f64::max(self.y.0,other.y.0) < f64::min(self.y.1,other.y.1)
+        && f64::max(self.z.0,other.z.0) < f64::min(self.z.1,other.z.1)
     }
     fn biggest_dim(&self, avg: Vec3) -> (Axis,f64) {
         let diff = Vec3::set(self.x.1,self.y.1,self.z.1) - Vec3::set(self.x.0,self.y.0,self.z.0);
@@ -142,6 +152,23 @@ impl AABB {
         }
         cnrs
     }
+    pub fn from_tri(triangle : &Triangle) -> AABB {
+        let mut mins = Vec3::new(f64::INFINITY);
+        let mut maxs = Vec3::new(f64::NEG_INFINITY);
+        for pt in triangle.iter() {
+            mins.x = f64::min(mins.x, pt.x);
+            mins.y = f64::min(mins.y, pt.y);
+            mins.z = f64::min(mins.y, pt.z);
+            maxs.x = f64::max(maxs.x, pt.x);
+            maxs.y = f64::max(maxs.y, pt.y);
+            maxs.z = f64::max(maxs.y, pt.z);
+        }
+        AABB {
+            x: (mins.x,maxs.x),
+            y: (mins.y,maxs.y),
+            z: (mins.z,maxs.z)
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -156,8 +183,8 @@ struct KDBranch {
     aabb: AABB,
     split_axis: Axis,
     split_val: f64,
-    child_lt: Box<KDNode>,
-    child_gt: Box<KDNode>,
+    child_lt: usize,//Box<KDNode>,
+    child_gt: usize,//Box<KDNode>,
 }
 #[derive(Debug)]
 struct KDLeaf {
@@ -170,7 +197,8 @@ enum KDNode {
 }
 #[derive(Debug)]
 pub struct KDTree {
-    root: Box<KDNode>,
+    root: Vec<KDNode>,
+    pub intersect_stack_size: usize,
 }
 
 impl KDTree {
@@ -189,41 +217,60 @@ impl KDTree {
             }
         }
     }
-    fn build_helper(triangles: &Vec<Triangle>, aabb:AABB, depth: usize) -> Box<KDNode> {
+    /**
+     * returns a tuple where the first element is the index of the root of this subtree and the second is the maximum depth encountered
+     */
+    fn build_helper(triangles: &Vec<Triangle>, aabb:AABB, depth: usize, node_vec: &mut Vec<KDNode>) -> (usize,usize) {
         let mut sum = Vec3::zero();
-        let mut count:f64 = 0.0;
+        let mut count:u32 = 0;
         let mut indices = Vec::new();
         for i in 0..triangles.len() {
             let ref tri = triangles[i];
-            if aabb.contains_tri(tri) {
+            if /*aabb.contains_tri(tri)*/ aabb.intersects(&AABB::from_tri(&tri)) {
                 indices.push(i);
                 for pt in tri.iter() {
                     sum = sum + *pt;
-                    count += 1.0;
+                    count += 1;
                 }
             }
         }
-        let (biggest_axis, sval) = aabb.biggest_dim(sum * (1.0/count));
-        let (la, ga) = aabb.split_biggest(sum * (1.0/count));
+        let (biggest_axis, sval) = aabb.biggest_dim(sum * (1.0/(count as f64)));
+        let (la, ga) = aabb.split_biggest(sum * (1.0/(count as f64)));
         //println!("count:{} sval:{} axis:{:?} la:{:?} ga:{:?}",count,sval,biggest_axis,la,ga);
-        if depth < 3 && count > 18.0 && la.valid() && ga.valid() { //arbitrarily picked 3 triangles as leaf size
-            Box::new(KDNode::Branch(KDBranch{
+        if depth < 10 && count > 6 && la.valid() && ga.valid() { //arbitrarily picked 20 triangles as leaf size
+            let idx = node_vec.len();
+            //println!("branch at {}",idx);
+            node_vec.push(KDNode::Branch(KDBranch{
                 aabb: aabb,
                 split_axis: biggest_axis,
                 split_val: sval,
-                child_lt: KDTree::build_helper(triangles,la,depth+1),
-                child_gt: KDTree::build_helper(triangles,ga,depth+1),
-                }))
+                child_lt: 0,
+                child_gt: 0,
+                }));
+            let (lt,ld) = KDTree::build_helper(triangles,la,depth+1,node_vec);
+            let (gt,gd) = KDTree::build_helper(triangles,ga,depth+1,node_vec);
+            let node: &mut KDNode = node_vec.index_mut(idx);
+            match *node {
+                KDNode::Branch(ref mut branch) => {
+                    branch.child_lt = lt;
+                    branch.child_gt = gt;
+                },
+                _ => panic!("Expected a Branch node!")
+            }
+            (idx,max(ld,gd))
         } else {
-            Box::new(KDNode::Leaf(KDLeaf {
+            let idx = node_vec.len();
+            //println!("leaf at {}",idx);
+            node_vec.push(KDNode::Leaf(KDLeaf {
                 tri_inds: indices,
-            }))
+            }));
+            (idx,depth)
         }
     }
 
     pub fn build(triangles: &Vec<Triangle>) -> KDTree {
-        let mut mins = Vec3::zero();
-        let mut maxs = Vec3::zero();
+        let mut mins = Vec3::new(f64::INFINITY);
+        let mut maxs = Vec3::new(f64::NEG_INFINITY);
         let mut sum = Vec3::zero();
         for tri in triangles {
             for pt in tri.iter() {
@@ -254,32 +301,93 @@ impl KDTree {
             child_gt: KDTree::build_helper(triangles,ga,0),
             }),
         }*/
+        let mut vec = Vec::new();
+        let (_,max_depth) = KDTree::build_helper(triangles,aabb,0, &mut vec);
+        /*let flat_tree = Vec::with_capacity(count);
+        let mut node = tree;
+        let mut index = 0;
+        loop {
+            match *node {
+                KDNode::Branch(branch) => {
+                    flat_tree.append(KDFlatBranch{
+                        aabb: branch.aabb,
+                        split_axis: branch.split_axis,
+                        split_val: branch.split_val,
+                        ch
+
+                    });
+                }
+            }
+            
+        }*/
         KDTree {
-            root: KDTree::build_helper(triangles,aabb,0)
+            root: vec,
+            intersect_stack_size: max_depth
         }
     }
 
-    fn intersect_helper<'a>(triangles: &'a Vec<Triangle>, ray: Ray, node: &KDNode,depth: usize) -> (Option<&'a Triangle>, f64){
+    /*fn flatten_helper(node: Box<KDNode>, index: usize, vec: &mut Vec<KDFlatNode>){
         match *node {
-            KDNode::Branch(ref branch) => {
-                if !branch.aabb.contains_ray(ray) || depth > 10 {
-                    return (None,std::f64::INFINITY);
-                }
-                if let (Some(x),y) = KDTree::intersect_helper(triangles, ray, &*branch.child_lt,depth+1) {
-                    (Some(x),y)
-                } else {
-                    KDTree::intersect_helper(triangles, ray, &*branch.child_gt,depth+1)
-                }
-            },
-            KDNode::Leaf(ref leaf) => {
-                intersect_triangle(triangles,ray)
-            },
-        }
-    }
+            KDNode::Branch(branch) => {
+                let mut flat = KDFlatBranch{
+                        aabb: branch.aabb,
+                        split_axis: branch.split_axis,
+                        split_val: branch.split_val,
+                        child_lt: 0,
+                        child_gt: 0
+                    };
+                    vec.append(KDNodeflat);
 
-    pub fn intersect<'a>(&self, triangles: &'a Vec<Triangle>, ray: Ray) -> (Option<&'a Triangle>, f64){
-        KDTree::intersect_helper(triangles,ray,&self.root,0)
+                }
+    }*/
+
+    pub fn intersect<'a>(&self, triangles: &'a Vec<Triangle>, ray: Ray, scratch_space: &mut Vec<usize>) -> (Option<&'a Triangle>, f64){
+        let tree = &self.root;
+        let mut stack = scratch_space;
+        stack.push(0);
+        loop {
+            if let Some(index) = stack.pop() {
+                match tree[index] {
+                    KDNode::Branch(ref branch) => {
+                        if branch.aabb.contains_ray(ray) {
+                            stack.push(branch.child_lt);
+                            stack.push(branch.child_gt);
+                        }
+                    },
+                    KDNode::Leaf(ref leaf) => {
+                        if let (Some(x),y) = intersect_selected_triangle(triangles,&leaf.tri_inds,ray) {
+                            return (Some(x),y)
+                        }
+                    },
+                }
+            } else {
+                break;
+            }
+        }
+        (None,std::f64::INFINITY)
     }
+}
+
+pub fn load_mesh(path: &str) -> (Vec<Triangle>, KDTree) {
+    let (obj, mat) = tobj::load_obj(&Path::new(path)).unwrap();
+    let obj_tris = obj.into_iter().flat_map(|part| {
+        let mut tris = Vec::new();
+        for f in 0..part.mesh.indices.len() / 3 {
+            let mut tri = Vec::new();
+            for ind in &part.mesh.indices[3*f..3*f+3] {
+                let x = part.mesh.positions[(3* *ind) as usize]as f64;
+                let y = part.mesh.positions[(3* *ind) as usize +1]as f64;
+                let z = part.mesh.positions[(3* *ind) as usize +2]as f64;
+                let v = Vec3::set(-x,z,y);
+                tri.push(v * 2.0 + Vec3::set(65.0,0.0,70.0));
+            }
+            tris.push(Triangle { points: [tri[0],tri[1],tri[2]]});
+        }
+        tris
+    }).collect();
+    let kdtree = KDTree::build(&obj_tris);
+    println!("Loaded {}, {} triangles, kdtree has {} nodes",path,obj_tris.len(),kdtree.root.len());
+    (obj_tris, kdtree)
 }
 
 #[cfg(test)]

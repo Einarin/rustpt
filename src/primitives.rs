@@ -104,6 +104,41 @@ pub fn intersect_triangle<'a>(triangles: &'a Vec<Triangle>, ray: Ray) -> (Option
 }
 
 #[inline(always)]
+pub fn intersect_selected_triangle<'a>(triangles: &'a Vec<Triangle>, indices: &Vec<usize>, ray: Ray) -> (Option<&'a Triangle>, f64) {
+    let inf = 1e20f64;
+    let EPSILON = 0.00000001f64;
+    let mut depth = inf;
+    let mut obj = Option::None;
+    for index in indices {
+        let triangle = &triangles[*index];
+        let e1 = triangle.points[1] - triangle.points[0];
+        let e2 = triangle.points[2] - triangle.points[0];
+        let p = ray.direction.cross(e2);
+        let det = e1.dot(p);
+        if det > -EPSILON && det < EPSILON {
+            continue; //ray is parallel to the plane
+        }
+        let inv_det = 1.0 / det;
+        let t = ray.origin - triangle.points[0];
+        let u = t.dot(p) * inv_det;
+        if u < 0.0 || u > 1.0 {
+            continue;
+        }
+        let q = t.cross(e1);
+        let v = ray.direction.dot(q) * inv_det;
+        if v < 0.0 || (u + v) > 1.0 {
+            continue;
+        }
+        let potential_depth = e2.dot(q) * inv_det;
+        if potential_depth > EPSILON && potential_depth < depth {
+            obj = Option::Some(triangle);
+            depth = potential_depth;
+        }
+    }
+    (obj, depth)
+}
+
+#[inline(always)]
 pub fn intersect<'a>(spheres: &'a Vec<Sphere>, r: &'a Ray)  -> (Option< &'a Sphere>, f64) {
     let inf = 1e20f64;
     let mut t = inf;
