@@ -10,6 +10,7 @@ use std::io::Write;
 use vec3::*;
 use primitives::*;
 use kdtree::*;
+use UnorderedAccessBuffer::UnorderedBufferWriter;
 
 static PI: f64 = 3.14159265358979323;
 
@@ -19,16 +20,16 @@ pub struct PathTracer {
     pub width: usize,
     pub height: usize,
     pub samples: u32,
-    pub buffer: Vec<Vec3>,
+    pub buffer: UnorderedBufferWriter<Vec3>//Vec<Vec3>,
 }
 
 impl PathTracer {
-    pub fn new(width: u32, height: u32) -> PathTracer {
+    pub fn new(width: u32, height: u32, back_buffer: UnorderedBufferWriter<Vec3>) -> PathTracer {
         PathTracer {
             width: width as usize,
             height: height as usize,
             samples: 0,
-            buffer: vec![Vec3::new(0.0);(width*height) as usize],
+            buffer: back_buffer,//vec![Vec3::new(0.0);(width*height) as usize],
             mesh_data: load_mesh("teapot.obj"),
             spheres: Arc::new(vec![
                 Sphere { //left wall
@@ -37,7 +38,7 @@ impl PathTracer {
                     material: Material {
                         emission: Vec3::zero(),
                         color: Vec3::set(0.75,0.25,0.25),
-                        refl: ReflType::DIFF,
+                        refl: ReflType::SPEC,
                     },
                 },
                 Sphere { //right wall
@@ -46,7 +47,7 @@ impl PathTracer {
                     material: Material {
                         emission: Vec3::zero(),
                         color: Vec3::set(0.25,0.25,0.75),
-                        refl: ReflType::SPEC,
+                        refl: ReflType::DIFF,
                     },
                 },
                 Sphere { //back wall
@@ -91,7 +92,7 @@ impl PathTracer {
                     material: Material {
                         emission: Vec3::zero(),
                         color: Vec3::new(0.999),
-                        refl: ReflType::SPEC,
+                        refl: ReflType::DIFF,
                     },
                 },
                 /*Sphere { //glass ball
@@ -99,7 +100,7 @@ impl PathTracer {
                     position: Vec3::set(73.0,16.5,78.0),
                     material: Material {
                         emission: Vec3::zero(),
-                        color: Vec3::new(0.999),
+                        color: Vec3::set(1.000, 0.766, 0.336),//Vec3::new(0.999),
                         refl: ReflType::REFR,
                     },
                 },*/
@@ -109,10 +110,10 @@ impl PathTracer {
                     material: Material {
                         emission: Vec3::zero(),
                         color: Vec3::set(1.000, 0.766, 0.336),
-                        refl: ReflType::SPEC,
+                        refl: ReflType::DIFF,
                     },
                 },
-                Sphere { //green glass
+                /*Sphere { //green glass
                     radius: 8.0,
                     position: Vec3::set(50.0,8.0,110.0),
                     material: Material {
@@ -138,7 +139,7 @@ impl PathTracer {
                         color: Vec3::set(0.75,0.50,1.0),
                         refl: ReflType::REFR,
                     },
-                },
+                },*/
                 Sphere { //light
                     radius: 600.0,
                     position: Vec3::set(50.0,681.6-0.27,81.6),
@@ -254,8 +255,8 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ra
         let (hit, dist) = intersect_val(spheres,r);
         //let (hit2, dist2) = intersect_triangle(&obj_tris, r);
         //let (hit2, dist2): (Option<Triangle>,f64) = (None,1e20f64);
-        let (hit2, dist2) = kdtree.intersect(&obj_tris, r, scratch_space);
-        //let hit2: Option<Triangle> = None; let dist2 = std::f64::INFINITY;
+        //let (hit2, dist2) = kdtree.intersect(&obj_tris, r, scratch_space);
+        let hit2: Option<Triangle> = None; let dist2 = std::f64::INFINITY;
 
         let x;
         let n;
@@ -276,6 +277,11 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<Triangle>, &KDTree), ra
                     color: Vec3::new(0.99),//Vec3::set(0.1,0.2,0.4),
                     refl: ReflType::REFR,
                 }
+                /*mtl = Material {
+                    emission: Vec3::zero(),
+                    color: Vec3::set(1.000, 0.766, 0.336),
+                    refl: ReflType::SPEC,
+                }*/
             } else {
                 break;
             }

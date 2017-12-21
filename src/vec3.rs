@@ -51,6 +51,13 @@ impl Add for Vec3 {
     }
 }
 
+impl Add<f64> for Vec3 {
+    type Output = Vec3;
+    fn add(self, _rhs: f64) -> Vec3 {
+        Vec3 { x:self.x + _rhs, y:self.y + _rhs, z:self.z + _rhs }
+    }
+}
+
 impl Sub for Vec3 {
     type Output = Vec3;
 
@@ -77,6 +84,13 @@ impl Mul<Vec3> for f64 {
     type Output = Vec3;
     fn mul(self, _rhs: Vec3) -> Vec3 {
         Vec3 { x: self * _rhs.x, y: self * _rhs.y, z: self * _rhs.z }
+    }
+}
+
+impl Div<Vec3> for Vec3 {
+    type Output = Vec3;
+    fn div(self, _rhs: Vec3) -> Vec3 {
+        Vec3{ x: self.x / _rhs.x, y: self.y / _rhs.y, z: self.z / _rhs.z }
     }
 }
 

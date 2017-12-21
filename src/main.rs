@@ -19,6 +19,8 @@ mod kdtree;
 use kdtree::*;
 mod pathtracer;
 use pathtracer::*;
+mod UnorderedAccessBuffer;
+//use UnorderedAccessBuffer::*;
 
 fn clamp(x: f64) -> f64 {
     match x {
@@ -34,8 +36,8 @@ fn to_u8(x: f64) -> u8 {
 
 pub fn main() {
     let opengl = OpenGL::V3_2;
-    let width = 640;//1024*2;
-    let height = 480;//768*2;
+    let width = 1024;//1024*2;
+    let height = 768;//768*2;
     let scale = 1;
     let mut window: PistonWindow = WindowSettings::new(
             "rustpt",
@@ -44,33 +46,38 @@ pub fn main() {
         .opengl(opengl)
         .exit_on_esc(true)
         .build().unwrap();
-
-    let mut tracer = PathTracer::new(width,height);
+    let (mut writer, reader) = UnorderedAccessBuffer::new((width * height) as usize);
     let mut samples_per_pass = 1;
     println!("Rendering...");
+    spawn(move ||{
+        let mut tracer = PathTracer::new(width,height, writer);
+        loop{
+            tracer.render(samples_per_pass);
+        }
+    });
     //tracer.render(samples_per_pass);
-    let buffer = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
+    let buffer = reader.iter().flat_map(|pixel|{let p = *pixel / (*pixel + 1.0); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
     let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
     let mut texture = Texture::from_image(&mut window.factory,&img,&TextureSettings::new()).unwrap();
     let mut count = 1;
     while let Some(e) = window.next() {
         window.draw_2d(&e, |c, g| {
-            print!("Pass {} with {} samples",count,samples_per_pass);
-            tracer.render(samples_per_pass);
+            //print!("Pass {} with {} samples",count,samples_per_pass);
+            //tracer.render(samples_per_pass);
             count += 1;
             samples_per_pass = std::cmp::min(64,samples_per_pass * 2);
             clear([0.5, 0.0, 1.0, 1.0], g);
-            let buffer = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
+            let buffer = reader.iter().flat_map(|pixel|{let p = *pixel / (*pixel + 1.0); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z),255]}).collect();
             let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
             texture.update(&mut g.encoder,&img).unwrap();
             draw_image(&texture, c.transform.scale(scale as f64,scale as f64), g);
             //draw_image(&texture, c.transform.scale(0.5,0.5), g);
             //draw_image(&texture, c.transform, g);
-            let rgb_buffer: Vec<u8> = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
+            /*let rgb_buffer: Vec<u8> = reader.iter().flat_map(|pixel|{let p = *pixel / (*pixel + 1.0); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
             println!("...Saved");
             spawn(move || {
                 image::save_buffer(&Path::new("save.png"), &rgb_buffer, width, height, image::RGB(8)).unwrap();
-            });
+            });*/
         });
     }
     
@@ -80,6 +87,6 @@ pub fn main() {
     for pixel in tracer.buffer {
         write!(&mut writer," {} {} {} ",to_int(pixel.x),to_int(pixel.y),to_int(pixel.z)).unwrap();
     }*/
-    let rgb_buffer: Vec<u8> = tracer.buffer.iter().flat_map(|pixel|{let p = *pixel * (1.0/(tracer.samples as f64)); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
+    let rgb_buffer: Vec<u8> = reader.iter().flat_map(|pixel|{let p = *pixel / (*pixel + 1.0); vec![to_u8(p.x),to_u8(p.y),to_u8(p.z)]}).collect();
     image::save_buffer(&Path::new("image.png"), &rgb_buffer, width, height, image::RGB(8)).unwrap();
 }
