@@ -6,6 +6,6 @@ authors = ["Johnny Dickinson <kc0itv@gmail.com>"]
 [dependencies]
 rand = "*"
 crossbeam = "*"
-piston_window = "0.58.0"
-image = "0.10.0"
-tobj = "0.1.2"
+piston_window = "*"
+image = "*"
+tobj = "*"

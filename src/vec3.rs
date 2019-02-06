@@ -94,6 +94,13 @@ impl Div<Vec3> for Vec3 {
     }
 }
 
+impl Div<f64> for Vec3 {
+    type Output = Vec3;
+    fn div(self, _rhs: f64) -> Vec3 {
+        Vec3{ x: self.x / _rhs, y: self.y / _rhs, z: self.z / _rhs }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

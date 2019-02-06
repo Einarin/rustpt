@@ -91,26 +91,26 @@ impl PathTracer {
                     position: Vec3::set(27.0,16.5,47.0),
                     material: Material {
                         emission: Vec3::zero(),
-                        color: Vec3::new(0.999),
+                        color: Vec3::new(1.5),
                         refl: ReflType::DIFF,
                     },
                 },
-                /*Sphere { //glass ball
+                Sphere { //glass ball
                     radius: 16.5,
                     position: Vec3::set(73.0,16.5,78.0),
                     material: Material {
                         emission: Vec3::zero(),
-                        color: Vec3::set(1.000, 0.766, 0.336),//Vec3::new(0.999),
+                        color: Vec3::set(0.56,0.99,0.56),
                         refl: ReflType::REFR,
                     },
-                },*/
+                },
                 Sphere { //gold hemisphere
                     radius: 16.5,
                     position: Vec3::set(27.0,0.0,96.0),
                     material: Material {
                         emission: Vec3::zero(),
                         color: Vec3::set(1.000, 0.766, 0.336),
-                        refl: ReflType::DIFF,
+                        refl: ReflType::SPEC,
                     },
                 },
                 /*Sphere { //green glass
@@ -153,13 +153,12 @@ impl PathTracer {
         }
     }
 
-    pub fn render(&mut self, samples_per_pass: u32) {
+    pub fn render(&mut self, samples_per_pass: u32, sample_count: &Arc<AtomicUsize>) {
         let ref spheres = self.spheres;
         let (ref tris,ref kdtree) = self.mesh_data;
         let mut mesh_data = (tris,kdtree);
         let w = self.width;
         let h = self.height;
-        self.samples += samples_per_pass;
         //println!("generating image {}x{} with {} samples per pixel",w,h,samps*4);//4 subsamples per pixel for AA
         let ref mut c = self.buffer;
         let progress = Arc::new(AtomicUsize::new(0));
@@ -179,7 +178,7 @@ impl PathTracer {
                 let thread_progress = progress.clone();
                 let start = thread * section;
                 let mut scratch_space = Vec::with_capacity(kdtree.intersect_stack_size);
-                threads.push(scope.spawn(move || {
+                threads.push(scope.spawn(move |_| {
                         for i in 0..section {
                             let y = h - (i + start);
                             for x in 0..w {
@@ -229,6 +228,8 @@ impl PathTracer {
             for t in threads {
                 t.join();
             }
+            //self.samples += samples_per_pass;
+            sample_count.fetch_add(samples_per_pass as usize, Ordering::Relaxed);
             //println!("\ndone!");
         });
         let duration = start.elapsed();
