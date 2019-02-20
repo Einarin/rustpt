@@ -3,9 +3,9 @@
     "configurations": [
         {
             "name": "Debug",
-            "type": "gdb",
+            "type": "cppvsdbg",
             "request": "launch",
-            "target": "./target/debug/rustpt.exe",
+            "program": "./target/debug/rustpt.exe",
             "cwd": "${workspaceRoot}"
         }
     ]

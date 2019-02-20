@@ -1,0 +1,26 @@
+# Blender MTL File: 'None'
+# Material Count: 2
+
+newmtl Rough_Metal
+Ns 35.999996
+Ka 1.000000 1.000000 1.000000
+Kd 0.835672 0.835355 0.911791
+Ks 0.500000 0.500000 0.500000
+Ke 0.0 0.0 0.0
+Ni 1.450000
+d 1.000000
+illum 3
+map_Bump rustediron2-Unreal-Engine\\rustediron2_normal.png
+map_Kd rustediron2-Unreal-Engine\\rustediron2_basecolor.png
+map_Ns rustediron2-Unreal-Engine\\rustediron2_roughness.png
+refl rustediron2-Unreal-Engine\\rustediron2_metallic.png
+
+newmtl Shiny_Gold
+Ns 900.000000
+Ka 1.000000 1.000000 1.000000
+Kd 1.000000 0.766000 0.336000
+Ks 0.500000 0.500000 0.500000
+Ke 0.0 0.0 0.0
+Ni 1.450000
+d 1.000000
+illum 3

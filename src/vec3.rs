@@ -17,6 +17,15 @@ impl Vec3 {
     pub fn set(x: f64, y: f64, z: f64) -> Vec3 {
         Vec3 { x: x, y: y, z: z }
     }
+    pub fn from_slice(data: &[f64]) -> Vec3 {
+        Vec3 { x: data[0], y: data[1], z: data[2] }
+    }
+    pub fn from_f32_slice(data: &[f32]) -> Vec3 {
+        Vec3 { x: data[0]as f64, y: data[1] as f64, z: data[2] as f64 }
+    }
+    pub fn from_iter(iter: &mut Iterator<Item = f64>) -> Vec3 {
+        Vec3 { x: iter.next().unwrap(), y: iter.next().unwrap(), z: iter.next().unwrap() }
+    }
     pub fn length(self) -> f64 {
         let x2 = self.x*self.x;
         let y2 = self.y*self.y;
@@ -99,6 +108,30 @@ impl Div<f64> for Vec3 {
     fn div(self, _rhs: f64) -> Vec3 {
         Vec3{ x: self.x / _rhs, y: self.y / _rhs, z: self.z / _rhs }
     }
+}
+
+impl Sub<Vec3> for f64 {
+    type Output = Vec3;
+
+    fn sub(self, _rhs: Vec3) -> Vec3 {
+        Vec3 { x: self - _rhs.x, y: self - _rhs.y, z: self - _rhs.z }
+    }
+}
+
+impl Index<usize> for Vec3 {
+    type Output = f64;
+    fn index(&self, index: usize) -> &f64 {
+        match index {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            _ => panic!("index {} out of range for a Vec3!",index)
+        }
+    }
+}
+
+pub fn mix(a: Vec3, b: Vec3, mix: f64) -> Vec3 {
+    b * mix + a * (1.0 - mix)
 }
 
 #[cfg(test)]

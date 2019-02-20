@@ -1,4 +1,4 @@
-
+#![allow(dead_code)]
 use std::thread::spawn;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize,Ordering};
@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize,Ordering};
 
 use std::path::Path;
 use std::f64;
-use std::time::{Duration,Instant};
+use std::time::Instant;
 
 extern crate tobj;
 extern crate piston_window;
@@ -17,13 +17,10 @@ use piston_window::texture::TextureSettings;
 mod vec3;
 use vec3::*;
 mod primitives;
-use primitives::*;
 mod kdtree;
-use kdtree::*;
 mod pathtracer;
 use pathtracer::*;
-mod UnorderedAccessBuffer;
-//use UnorderedAccessBuffer::*;
+mod unordered_access_buffer;
 
 fn clamp(x: f64) -> f64 {
     match x {
@@ -69,6 +66,19 @@ impl IntoIterator for Array4Iterable {
     }
 }
 
+pub fn fizzbuzz() {
+    for i in 1..101 {
+        let fizz = (i % 3) == 0;
+        let buzz = (i % 5) == 0;
+        match (fizz,buzz) {
+            (true, true) => println!("FizzBuzz"),
+            (true, false) => println!("Fizz"),
+            (false, true) => println!("Buzz"),
+            _ => println!("{}",i),
+        }
+    }
+}
+
 pub fn main() {
     let opengl = OpenGL::V3_2;
     let width = 1024;//1024*2;
@@ -81,15 +91,19 @@ pub fn main() {
         .opengl(opengl)
         .exit_on_esc(true)
         .build().unwrap();
-    let (mut writer, reader) = UnorderedAccessBuffer::new((width * height) as usize);
+    let (writer, reader) = unordered_access_buffer::new((width * height) as usize,Vec3::zero());
     let mut samples_per_pass = 1;
     println!("Rendering...");
     let sample_count = Arc::new(AtomicUsize::new(0));
     let render_sample_count = sample_count.clone();
     spawn(move ||{
         let mut tracer = PathTracer::new(width,height, writer);
+        let mut count = 1;
         loop{
+            print!("Pass {} with {} samples ",count,samples_per_pass);
             tracer.render(samples_per_pass,&render_sample_count);
+            count += 1;
+            //samples_per_pass = std::cmp::min(64,samples_per_pass * 2);
         }
     });
     //tracer.render(samples_per_pass);
@@ -104,7 +118,7 @@ pub fn main() {
             //print!("Pass {} with {} samples",count,samples_per_pass);
             //tracer.render(samples_per_pass);
             //count += 1;
-            samples_per_pass = std::cmp::min(64,samples_per_pass * 2);
+            
             clear([0.5, 0.0, 1.0, 1.0], g);
             let buffer = reader.iter().flat_map(|x|tone_map(x)).collect();
             let img = image::ImageBuffer::from_raw(width,height,buffer).unwrap();
