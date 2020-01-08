@@ -31,12 +31,12 @@ impl PathTracer {
     #[allow(unused_variables)]
     pub fn new(width: u32, height: u32, back_buffer: UnorderedBufferWriter<Vec3>) -> PathTracer {
         //Vec3::set(65.0,0.0,70.0)
-        let (iron_tris,iron_materials) = load_mesh("IronMan.obj");
-        let (nano_tris,nano_materials) = load_mesh("nanosuit.obj");
+        //let (iron_tris,iron_materials) = load_mesh("IronMan.obj");
+        //let (nano_tris,nano_materials) = load_mesh("nanosuit.obj");
         let (teapot_tris,teapot_materials) = load_mesh("teapot.obj");
-        let (cube_tris,cube_materials) = load_mesh("cube.obj");
-        let (fancy_tris,fancy_materials) = load_mesh("fancycube.obj");
-        println!("materials: {:?}", fancy_materials);
+        //let (cube_tris,cube_materials) = load_mesh("cube.obj");
+        //let (fancy_tris,fancy_materials) = load_mesh("fancycube.obj");
+        /*println!("materials: {:?}", fancy_materials);
         let textures: Vec<PhysicalMaterialTextures> = fancy_materials.iter().map(|material|{
             let path = &material.diffuse_texture;
             let albedo = if path.is_empty() {
@@ -91,7 +91,7 @@ impl PathTracer {
                     roughness,
                 })
             }
-        }).collect();
+        }).collect();*/
         
         
         /*let materials = vec![
@@ -116,7 +116,7 @@ impl PathTracer {
 
         //triangles.extend(nano_tris.iter().map(|tri|*tri * Vec3::new(2.0) + Vec3::set(50.0,0.0,50.0)));
         //triangles.extend(iron_tris.iter().map(|tri|*tri * Vec3::new(0.1) + Vec3::set(50.0,0.0,90.0)));
-        triangles.extend(fancy_tris.iter().map(|tri|*tri * Vec3::new(4.0) + Vec3::set(20.0,15.0,40.0)));
+        //triangles.extend(fancy_tris.iter().map(|tri|*tri * Vec3::new(4.0) + Vec3::set(20.0,15.0,40.0)));
         //materials.push(Material::Diffuse(Vec3::new(0.1)));
         /*triangles.extend(nano_tris.iter().map(|tri|{let mut transformed = *tri * Vec3::new(2.0) + Vec3::set(50.0,0.0,50.0); transformed.material_index = materials.len()-1; transformed}));
         materials.push(Material {
@@ -131,6 +131,9 @@ impl PathTracer {
             refl: ReflType::PBR,
         });*/
         //triangles.extend(nano_tris.iter().map(|tri|{let mut transformed = *tri * Vec3::new(2.0) + Vec3::set(30.0,0.0,70.0); transformed.material_index = materials.len()-1; transformed}));
+        let mut materials = Vec::new();
+        let textures = Vec::new();
+        let rust_textures = Vec::new();
         materials.push(Material::Refractive(Vec3::new(0.999)));
         triangles.extend(teapot_tris.iter().map(|tri|{
             let mut transformed = *tri;
@@ -588,7 +591,7 @@ fn radiance_iter(spheres: &Vec<Sphere>, mesh_data: (&Vec<MeshTriangle>, &KDTree)
         depth += 1;
         if depth > 4 { //begin russian roulette
             let p = 0.5;
-            if depth < 8 && rand::random::<f64>() < p * atten.length() {
+            if /*atten.x.max(atten.y.max(atten.z)) > 0.001 &&*/ depth < 8 && rand::random::<f64>() < p * atten.length() {
                 atten = atten * (1.0/p);
             } else {
                 break;
