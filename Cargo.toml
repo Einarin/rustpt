@@ -4,9 +4,9 @@ version = "0.2.0"
 authors = ["Johnny Dickinson <kc0itv@gmail.com>"]
 
 [dependencies]
-rand = "*"
-crossbeam = "*"
-piston_window = "*"
-image = "*"
-tobj = "*"
-rayon = "*"
+rand = "0.6.5"
+crossbeam = "0.7.1"
+piston_window = "0.87.0"
+image = "0.21.0"
+tobj = "0.1.6"
+rayon = "1.0.3"
